@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta, date
 import random, uuid, base64, json, os
+import bcrypt
 from supabase import create_client, Client
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,6 +103,66 @@ def get_supabase() -> Client:
 
 def sb_available():
     return get_supabase() is not None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+def verify_login(email: str, password: str):
+    """Return user dict if credentials are valid, else None."""
+    sb = get_supabase()
+    if not sb:
+        return None
+    try:
+        rows = sb.table("users").select("*").ilike("email", email.strip()).execute().data
+        if not rows:
+            return None
+        user = rows[0]
+        pw_hash = user.get("password_hash") or ""
+        if not pw_hash:
+            return None
+        if bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
+            return user
+        return None
+    except Exception:
+        return None
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+def render_login_page():
+    """Full-screen login page. Sets session state on success."""
+    st.markdown("""
+    <style>
+      section[data-testid="stSidebar"]{display:none}
+      .login-wrap{max-width:400px;margin:60px auto}
+    </style>
+    """, unsafe_allow_html=True)
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        st.markdown("## 📋 CIMS")
+        st.markdown("##### Client Interaction Management System")
+        st.markdown("---")
+        with st.form("login_form", clear_on_submit=False):
+            email    = st.text_input("Email address", placeholder="you@company.com")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+        if submitted:
+            if not email or not password:
+                st.error("Enter your email and password.")
+            else:
+                user = verify_login(email, password)
+                if user:
+                    st.session_state.logged_in_user_id = user["id"]
+                    st.session_state.pop("initialized", None)
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password.")
+
+def logout():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
 
 # ══ Supabase CRUD helpers ══════════════════════════════════════════════════════
 
@@ -271,7 +332,7 @@ def has_perm(role_id, perm):
     return perm in (r.get("perms") or set()) if r else False
 
 def get_active_user():
-    uid = st.session_state.get("active_user_id","")
+    uid   = st.session_state.get("logged_in_user_id", "")
     users = st.session_state.get("users", [])
     if not users:
         return {"id":"","name":"Unknown","role":"viewer","email":"","color":VIOLET,"bg":VIOLET_LIGHT,"extra_fields":{}}
@@ -356,20 +417,16 @@ def render_sidebar():
     else:
         st.sidebar.error("🔴 Supabase not connected — check SUPABASE_URL and SUPABASE_KEY in secrets.toml")
     st.sidebar.markdown("---")
-    users = st.session_state.get("users", [])
+    users    = st.session_state.get("users", [])
     accounts = st.session_state.get("accounts", [])
-    if users:
-        st.sidebar.markdown("**Switch user**")
-        names = [u["name"] for u in users]
-        idx   = next((i for i,u in enumerate(users) if u["id"]==active["id"]), 0)
-        sel   = st.sidebar.selectbox("User", names, index=idx, label_visibility="collapsed")
-        sel_u = next((u for u in users if u["name"]==sel), None)
-        if sel_u and sel_u["id"] != st.session_state.get("active_user_id",""):
-            st.session_state.active_user_id = sel_u["id"]; st.rerun()
-        st.sidebar.markdown(role_badge_html(active["role"])+" &nbsp; **"+active["name"]+"**", unsafe_allow_html=True)
-        st.sidebar.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
+
+    st.sidebar.markdown(role_badge_html(active["role"]) + " &nbsp; **" + active["name"] + "**", unsafe_allow_html=True)
+    st.sidebar.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
+    if st.sidebar.button("🚪 Logout", use_container_width=True, key="logout_btn"):
+        logout()
+
     st.sidebar.markdown("---")
-    overdue = sum(1 for a in accounts if days_since(a["last_call_date"])>14)
+    overdue = sum(1 for a in accounts if days_since(a["last_call_date"]) > 14)
     st.sidebar.metric("Accounts", len(accounts))
     st.sidebar.metric("Overdue >14d", overdue)
     st.sidebar.metric("Team", len(users))
@@ -832,13 +889,25 @@ def render_users(active):
                 cur_v=existing.get("extra_fields",{}).get(f["id"],"") if existing else ""
                 if f["type"]=="select": ef_[f["id"]]=st.selectbox(f["label"],[""]+(f["options"] or []))
                 else: ef_[f["id"]]=st.text_input(f["label"],value=cur_v)
+            st.markdown("**Password**")
+            if existing:
+                pw_new=st.text_input("New password (leave blank to keep current)",type="password",key="pw_edit")
+            else:
+                pw_new=st.text_input("Initial password (required)",type="password",key="pw_new")
             sv,ca=st.columns(2); do_save=sv.form_submit_button("Save",type="primary"); do_cancel=ca.form_submit_button("Cancel")
         if do_save and n_:
-            c=TEAM_COLORS[len(st.session_state.users)%len(TEAM_COLORS)]
-            new_u={"id":existing["id"] if existing else "u"+new_id(),"name":n_,"email":e_,"role":r_,"extra_fields":ef_,**({"color":existing["color"],"bg":existing["bg"]} if existing else {"color":c["color"],"bg":c["bg"]})}
-            if existing: st.session_state.users=[new_u if u["id"]==existing["id"] else u for u in st.session_state.users]
-            else: st.session_state.users.append(new_u)
-            sb_upsert_user(new_u); del st.session_state["editing_user"]; st.rerun()
+            if not existing and not pw_new:
+                st.error("Password is required for new users.")
+            else:
+                c=TEAM_COLORS[len(st.session_state.users)%len(TEAM_COLORS)]
+                new_u={"id":existing["id"] if existing else "u"+new_id(),"name":n_,"email":e_,"role":r_,"extra_fields":ef_,**({"color":existing["color"],"bg":existing["bg"]} if existing else {"color":c["color"],"bg":c["bg"]})}
+                if pw_new:
+                    new_u["password_hash"] = hash_password(pw_new)
+                elif existing:
+                    new_u["password_hash"] = existing.get("password_hash","")
+                if existing: st.session_state.users=[new_u if u["id"]==existing["id"] else u for u in st.session_state.users]
+                else: st.session_state.users.append(new_u)
+                sb_upsert_user(new_u); del st.session_state["editing_user"]; st.rerun()
         if do_cancel: del st.session_state["editing_user"]; st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1040,10 +1109,15 @@ def render_import():
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    init_state()
     if not sb_available():
-        st.error("## Supabase not connected\n\nSet `SUPABASE_URL` and `SUPABASE_KEY` in `.streamlit/secrets.toml` and restart the app.")
+        st.error("## ⚠️ Supabase not connected\n\nSet `SUPABASE_URL` and `SUPABASE_KEY` in `.streamlit/secrets.toml` and restart the app.")
         st.stop()
+
+    if "logged_in_user_id" not in st.session_state:
+        render_login_page()
+        st.stop()
+
+    init_state()
     active  = get_active_user()
     is_rep  = active["role"] == "rep"
     render_sidebar()
