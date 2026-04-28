@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta, date
-import random, uuid, base64, json
+import random, uuid, base64, json, os
 from supabase import create_client, Client
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -86,13 +86,18 @@ BRANDS = [
 # ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets.get("SUPABASE_URL","")
-    key = st.secrets.get("SUPABASE_KEY","")
+    try:
+        url = st.secrets.get("SUPABASE_URL", "") or os.getenv("SUPABASE_URL", "")
+        key = st.secrets.get("SUPABASE_KEY", "") or os.getenv("SUPABASE_KEY", "")
+    except Exception:
+        url = os.getenv("SUPABASE_URL", "")
+        key = os.getenv("SUPABASE_KEY", "")
     if not url or not key:
         return None
     try:
         return create_client(url, key)
-    except Exception:
+    except Exception as e:
+        st.sidebar.error(f"Supabase error: {e}")
         return None
 
 def sb_available():
