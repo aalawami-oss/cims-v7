@@ -345,7 +345,7 @@ def init_state():
 # ══════════════════════════════════════════════════════════════════════════════
 def render_sidebar():
     active = get_active_user()
-    s = st.session_state.settings
+    s = st.session_state.get("settings", {"system_name": "CIMS", "system_logo_b64": None})
     if s.get("system_logo_b64"):
         st.sidebar.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
         st.sidebar.markdown("")
@@ -356,21 +356,23 @@ def render_sidebar():
     else:
         st.sidebar.error("🔴 Supabase not connected — check SUPABASE_URL and SUPABASE_KEY in secrets.toml")
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**Switch user**")
-    names = [u["name"] for u in st.session_state.users]
-    idx   = next((i for i,u in enumerate(st.session_state.users) if u["id"]==active["id"]),0)
-    sel   = st.sidebar.selectbox("User", names, index=idx, label_visibility="collapsed")
-    sel_u = next(u for u in st.session_state.users if u["name"]==sel)
-    if sel_u["id"] != st.session_state.active_user_id:
-        st.session_state.active_user_id = sel_u["id"]; st.rerun()
-    st.sidebar.markdown(role_badge_html(active["role"])+" &nbsp; **"+active["name"]+"**", unsafe_allow_html=True)
-    st.sidebar.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
+    users = st.session_state.get("users", [])
+    accounts = st.session_state.get("accounts", [])
+    if users:
+        st.sidebar.markdown("**Switch user**")
+        names = [u["name"] for u in users]
+        idx   = next((i for i,u in enumerate(users) if u["id"]==active["id"]), 0)
+        sel   = st.sidebar.selectbox("User", names, index=idx, label_visibility="collapsed")
+        sel_u = next((u for u in users if u["name"]==sel), None)
+        if sel_u and sel_u["id"] != st.session_state.get("active_user_id",""):
+            st.session_state.active_user_id = sel_u["id"]; st.rerun()
+        st.sidebar.markdown(role_badge_html(active["role"])+" &nbsp; **"+active["name"]+"**", unsafe_allow_html=True)
+        st.sidebar.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
     st.sidebar.markdown("---")
-    total   = len(st.session_state.accounts)
-    overdue = sum(1 for a in st.session_state.accounts if days_since(a["last_call_date"])>14)
-    st.sidebar.metric("Accounts", total)
+    overdue = sum(1 for a in accounts if days_since(a["last_call_date"])>14)
+    st.sidebar.metric("Accounts", len(accounts))
     st.sidebar.metric("Overdue >14d", overdue)
-    st.sidebar.metric("Team", len(st.session_state.users))
+    st.sidebar.metric("Team", len(users))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -1041,7 +1043,6 @@ def main():
     init_state()
     if not sb_available():
         st.error("## Supabase not connected\n\nSet `SUPABASE_URL` and `SUPABASE_KEY` in `.streamlit/secrets.toml` and restart the app.")
-        render_sidebar()
         st.stop()
     active  = get_active_user()
     is_rep  = active["role"] == "rep"
