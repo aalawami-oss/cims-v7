@@ -271,8 +271,11 @@ def has_perm(role_id, perm):
     return perm in (r.get("perms") or set()) if r else False
 
 def get_active_user():
-    uid = st.session_state.get("active_user_id","u1")
-    return next((u for u in st.session_state.users if u["id"]==uid), st.session_state.users[0])
+    uid = st.session_state.get("active_user_id","")
+    users = st.session_state.get("users", [])
+    if not users:
+        return {"id":"","name":"Unknown","role":"viewer","email":"","color":VIOLET,"bg":VIOLET_LIGHT,"extra_fields":{}}
+    return next((u for u in users if u["id"]==uid), users[0])
 
 def get_user(uid): return next((u for u in st.session_state.users if u["id"]==uid), None)
 def get_status(sid): return next((s for s in st.session_state.call_statuses if s["id"]==sid), None)
@@ -326,48 +329,16 @@ def init_state():
     st.session_state.visible_columns     = list(CORE_COLUMNS)
     st.session_state.selected_accounts   = set()
 
-    # Load from Supabase if available, else mock
-    if sb_available():
-        users    = sb_fetch_users()
-        accounts = sb_fetch_accounts()
-        if not users:    users    = _mock_users()
-        if not accounts: accounts = _mock_accounts()
-    else:
-        users    = _mock_users()
-        accounts = _mock_accounts()
+    # Load from Supabase — no mock fallback; only mark initialized if connected
+    if not sb_available():
+        return
+    users    = sb_fetch_users()
+    accounts = sb_fetch_accounts()
 
     st.session_state.users    = users
     st.session_state.accounts = accounts
-    st.session_state.active_user_id = users[0]["id"] if users else "u1"
+    st.session_state.active_user_id = users[0]["id"] if users else ""
     st.session_state.initialized = True
-
-def _mock_users():
-    return [
-        {"id":"u1","name":"Alawi Alawami",    "role":"admin",  "email":"a.alawami@foodics.com", **TEAM_COLORS[0],"extra_fields":{}},
-        {"id":"u2","name":"Sara Al-Zahrani",  "role":"manager","email":"sara@corp.com",          **TEAM_COLORS[1],"extra_fields":{}},
-        {"id":"u3","name":"Mohammed Al-Ghamdi","role":"rep",   "email":"mohammed@corp.com",       **TEAM_COLORS[2],"extra_fields":{}},
-        {"id":"u4","name":"Fatima Al-Otaibi", "role":"rep",    "email":"fatima@corp.com",         **TEAM_COLORS[3],"extra_fields":{}},
-        {"id":"u5","name":"Khalid Al-Qahtani","role":"viewer", "email":"khalid@corp.com",         **TEAM_COLORS[4],"extra_fields":{}},
-    ]
-
-def _mock_accounts():
-    uids=["u1","u2","u3","u4","u5"]; sids=["cs1","cs2","cs3","cs4","cs5","cs6"]
-    pool=[]; today=date.today()
-    for i in range(89,-1,-1):
-        d=today-timedelta(days=i)
-        for _ in range(random.randint(0,3)):
-            pool.append({"date":str(d),"text":"Follow-up call.","member_id":random.choice(uids),"status_id":random.choice(sids),"extra_fields":{"cf1":"","cf2":""}})
-    accounts=[]
-    for i,(acc_name,brand) in enumerate(BRANDS):
-        my_notes=[n for j,n in enumerate(pool) if j%len(BRANDS)==i][:3]
-        last=my_notes[0]["date"] if my_notes else rnd_date(45)
-        accounts.append({
-            "id":f"ACC-{str(i+1).zfill(4)}","account_name":acc_name,"brand_name":brand,
-            "branches":random.randint(3,120),"sector":SECTORS[i%len(SECTORS)],"last_call_date":last,
-            "contact_person":f"{['Ahmed','Sara','Mohammed','Fatima','Khalid'][i%5]} {['Al-Harbi','Al-Zahrani','Al-Ghamdi','Al-Otaibi','Al-Qahtani'][i%5]}",
-            "notes":my_notes,"extra_fields":{"ef1":"","ef2":"Medium"},"logo_b64":None,"is_deleted":False,
-        })
-    return accounts
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -381,9 +352,9 @@ def render_sidebar():
     else:
         st.sidebar.markdown(f"### {s['system_name']}")
     if sb_available():
-        st.sidebar.success("🟢 Supabase connected", icon=None)
+        st.sidebar.success("🟢 Supabase connected")
     else:
-        st.sidebar.warning("🟡 Running on mock data — add Supabase credentials in secrets.toml")
+        st.sidebar.error("🔴 Supabase not connected — check SUPABASE_URL and SUPABASE_KEY in secrets.toml")
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Switch user**")
     names = [u["name"] for u in st.session_state.users]
@@ -1068,6 +1039,10 @@ def render_import():
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
     init_state()
+    if not sb_available():
+        st.error("## Supabase not connected\n\nSet `SUPABASE_URL` and `SUPABASE_KEY` in `.streamlit/secrets.toml` and restart the app.")
+        render_sidebar()
+        st.stop()
     active  = get_active_user()
     is_rep  = active["role"] == "rep"
     render_sidebar()
