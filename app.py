@@ -33,11 +33,11 @@ st.markdown("""
   .stButton>button{border-radius:8px!important}
   div[data-testid="stMetricValue"]>div{font-size:1.45rem!important}
   .stDataFrame{border-radius:10px;overflow:hidden}
-  .badge-ok{background:#EAF3DE;color:#27500A;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
-  .badge-warn{background:#FAEEDA;color:#633806;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
-  .badge-danger{background:#FCEBEB;color:#791F1F;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
-  .badge-info{background:#EDE9FC;color:#4A24A8;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
-  .rep-banner{background:#EDE9FC;color:#4A24A8;padding:10px 14px;border-radius:8px;margin-bottom:1rem;font-size:13px}
+  .badge-ok{background:#EDE9FC;color:#6C3FC5;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
+  .badge-warn{background:#EDE9FC;color:#6C3FC5;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
+  .badge-danger{background:#6C3FC5;color:#ffffff;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
+  .badge-info{background:#EDE9FC;color:#6C3FC5;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:500}
+  .rep-banner{background:#EDE9FC;color:#6C3FC5;padding:10px 14px;border-radius:8px;margin-bottom:1rem;font-size:13px}
   .acc-logo{width:40px;height:40px;border-radius:8px;object-fit:contain;background:#f3f0ff;padding:4px}
   .sys-logo{max-height:38px;max-width:140px;object-fit:contain}
   .filter-bar{background:#faf9fe;border:1px solid #e0daf5;border-radius:10px;padding:12px 16px;margin-bottom:1rem}
@@ -50,7 +50,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 VIOLET       = "#6C3FC5"
 VIOLET_LIGHT = "#EDE9FC"
-VIOLET_TEXT  = "#4A24A8"
+VIOLET_TEXT  = "#6C3FC5"
 
 ALL_PERMS = [
     ("view",          "View accounts"),
@@ -62,10 +62,10 @@ ALL_PERMS = [
     ("manage_schema", "Manage fields, roles & settings"),
 ]
 TEAM_COLORS = [
-    {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#0F6E56","bg":"#E1F5EE"},
-    {"color":"#993C1D","bg":"#FAECE7"},{"color":"#993556","bg":"#FBEAF0"},
-    {"color":"#854F0B","bg":"#FAEEDA"},{"color":"#185FA5","bg":"#E6F1FB"},
-    {"color":"#3B6D11","bg":"#EAF3DE"},{"color":"#A32D2D","bg":"#FCEBEB"},
+    {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
+    {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
+    {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
+    {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
 ]
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
@@ -118,7 +118,12 @@ def verify_login(email: str, password: str):
         if not rows:
             return None
         user = rows[0]
-        pw_hash = user.get("password_hash") or ""
+        # Support password hash in dedicated column OR inside extra_fields JSONB
+        ef = user.get("extra_fields") or {}
+        if isinstance(ef, str):
+            try: ef = json.loads(ef)
+            except: ef = {}
+        pw_hash = user.get("password_hash") or ef.get("_pw", "")
         if not pw_hash:
             return None
         if bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
@@ -274,7 +279,15 @@ def sb_upsert_user(user: dict):
     try:
         p = dict(user)
         if isinstance(p.get("perms"), set): p["perms"] = list(p["perms"])
-        if isinstance(p.get("extra_fields"), dict): p["extra_fields"] = json.dumps(p["extra_fields"])
+        # Move password_hash into extra_fields._pw (no dedicated column needed)
+        pw = p.pop("password_hash", None)
+        ef = p.get("extra_fields") or {}
+        if isinstance(ef, str):
+            try: ef = json.loads(ef)
+            except: ef = {}
+        if pw:
+            ef["_pw"] = pw
+        p["extra_fields"] = json.dumps(ef)
         sb.table("users").upsert(p).execute()
     except Exception as e:
         st.warning(f"Supabase user upsert failed: {e}")
@@ -369,17 +382,17 @@ def init_state():
     }
     st.session_state.roles = [
         {"id":"admin",  "label":"Admin",   "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log","add_account","import","manage_users","export","manage_schema"}},
-        {"id":"manager","label":"Manager", "color":"#085041","bg":"#E1F5EE","perms":{"view","log","add_account","import","export"}},
-        {"id":"rep",    "label":"Rep",     "color":"#633806","bg":"#FAEEDA","perms":{"view","log"}},
-        {"id":"viewer", "label":"Viewer",  "color":"#444441","bg":"#F1EFE8","perms":{"view"}},
+        {"id":"manager","label":"Manager", "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log","add_account","import","export"}},
+        {"id":"rep",    "label":"Rep",     "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log"}},
+        {"id":"viewer", "label":"Viewer",  "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view"}},
     ]
     st.session_state.call_statuses = [
-        {"id":"cs1","label":"Completed",         "color":"#1D9E75"},
-        {"id":"cs2","label":"No Answer",          "color":"#BA7517"},
-        {"id":"cs3","label":"Follow-up Required", "color":VIOLET},
-        {"id":"cs4","label":"Meeting Scheduled",  "color":"#6C3FC5"},
-        {"id":"cs5","label":"Not Interested",     "color":"#A32D2D"},
-        {"id":"cs6","label":"Voicemail Left",     "color":"#5F5E5A"},
+        {"id":"cs1","label":"Completed",         "color":"#6C3FC5"},
+        {"id":"cs2","label":"No Answer",         "color":"#6C3FC5"},
+        {"id":"cs3","label":"Follow-up Required","color":"#6C3FC5"},
+        {"id":"cs4","label":"Meeting Scheduled", "color":"#6C3FC5"},
+        {"id":"cs5","label":"Not Interested",    "color":"#6C3FC5"},
+        {"id":"cs6","label":"Voicemail Left",    "color":"#6C3FC5"},
     ]
     st.session_state.account_extra_fields = [
         {"id":"ef1","label":"Region",  "type":"text",  "options":[]},
