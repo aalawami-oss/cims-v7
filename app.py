@@ -69,7 +69,7 @@ TEAM_COLORS = [
 ]
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
-CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact"]
+CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","F5 Number"]
 BRANDS = [
     ("Al Futtaim Group","ACE Hardware"),("Alshaya Group","Starbucks ME"),
     ("Majid Al Futtaim","Mall of the Emirates"),("Jarir Bookstore","Jarir"),
@@ -704,6 +704,8 @@ def render_accounts(active, is_rep):
                 show("Contact",      acc.get("contact_person","—"))
                 if "Last Call" in vis:
                     g[ci%4].markdown(f"**Last call:** {acc['last_call_date']} &nbsp;"+urgency_badge(d), unsafe_allow_html=True); ci+=1
+                f5 = acc.get("extra_fields",{}).get("f5_number","")
+                if f5: show("F5 Number", f5)
                 for f in st.session_state.account_extra_fields:
                     val = acc.get("extra_fields",{}).get(f["id"],"")
                     if val: show(f["label"], val)
@@ -745,7 +747,10 @@ def _render_edit_account():
         new_branches = c3.number_input("# of branches", min_value=1, value=int(acc["branches"]))
         sect_idx = SECTORS.index(acc["sector"]) if acc["sector"] in SECTORS else 0
         new_sector   = c4.selectbox("Sector", SECTORS, index=sect_idx)
-        new_contact  = st.text_input("Contact person", value=acc.get("contact_person",""))
+        c5,c6 = st.columns(2)
+        new_contact  = c5.text_input("Contact person", value=acc.get("contact_person",""))
+        cur_f5 = acc.get("extra_fields",{}).get("f5_number","")
+        new_f5 = c6.text_input("F5 Number", value=cur_f5, placeholder="6-digit number", max_chars=6, key=f"f5_{acc_id}")
         new_logo_f   = st.file_uploader("Brand logo (PNG/JPG)", type=["png","jpg","jpeg"], key=f"logo_up_{acc_id}")
         ef_vals = {}
         for f in st.session_state.account_extra_fields:
@@ -758,12 +763,16 @@ def _render_edit_account():
         s1,s2,s3 = st.columns(3)
         do_save=s1.form_submit_button("Save",type="primary"); do_clear=s2.form_submit_button("Remove logo"); do_cancel=s3.form_submit_button("Cancel")
     if do_save:
-        new_b64 = img_to_b64(new_logo_f) if new_logo_f else acc.get("logo_b64")
-        for i,a in enumerate(st.session_state.accounts):
-            if a["id"]==acc_id:
-                st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"extra_fields":ef_vals,"logo_b64":new_b64}
-                sb_upsert_account(st.session_state.accounts[i]); break
-        del st.session_state["editing_account"]; st.success("Account updated."); st.rerun()
+        if new_f5 and (not new_f5.isdigit() or len(new_f5) != 6):
+            st.error("F5 Number must be exactly 6 digits.")
+        else:
+            ef_vals["f5_number"] = new_f5.strip()
+            new_b64 = img_to_b64(new_logo_f) if new_logo_f else acc.get("logo_b64")
+            for i,a in enumerate(st.session_state.accounts):
+                if a["id"]==acc_id:
+                    st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"extra_fields":ef_vals,"logo_b64":new_b64}
+                    sb_upsert_account(st.session_state.accounts[i]); break
+            del st.session_state["editing_account"]; st.success("Account updated."); st.rerun()
     if do_clear:
         for i,a in enumerate(st.session_state.accounts):
             if a["id"]==acc_id: st.session_state.accounts[i]["logo_b64"]=None; sb_upsert_account(st.session_state.accounts[i]); break
@@ -1058,18 +1067,23 @@ def render_add_account(active):
     with st.form("add_acc_form"):
         c1,c2=st.columns(2); acc_name=c1.text_input("Account name",placeholder="Legal entity"); brand=c2.text_input("Brand name",placeholder="Public name")
         c3,c4=st.columns(2); branches=c3.number_input("# of branches",min_value=1,value=10); sector=c4.selectbox("Sector",SECTORS)
-        contact=st.text_input("Contact person"); logo_file=st.file_uploader("Brand logo (PNG/JPG, optional)",type=["png","jpg","jpeg"],key="new_acc_logo")
+        c5,c6=st.columns(2); contact=c5.text_input("Contact person"); f5_num=c6.text_input("F5 Number",placeholder="6-digit number",max_chars=6)
+        logo_file=st.file_uploader("Brand logo (PNG/JPG, optional)",type=["png","jpg","jpeg"],key="new_acc_logo")
         ef_vals={}
         for f in st.session_state.account_extra_fields:
             if f["type"]=="select": ef_vals[f["id"]]=st.selectbox(f["label"],[""]+(f["options"] or []))
             else: ef_vals[f["id"]]=st.text_input(f["label"])
         s1,s2=st.columns(2); do_save=s1.form_submit_button("Add account",type="primary"); do_cancel=s2.form_submit_button("Cancel")
     if do_save and acc_name and brand:
-        logo_b64=img_to_b64(logo_file) if logo_file else None
-        new_acc={"id":f"ACC-{str(len(st.session_state.accounts)+1).zfill(4)}","account_name":acc_name,"brand_name":brand,"branches":int(branches),"sector":sector,"last_call_date":rnd_date(1),"contact_person":contact,"notes":[],"extra_fields":ef_vals,"logo_b64":logo_b64,"is_deleted":False}
-        st.session_state.accounts.append(new_acc)
-        sb_upsert_account(new_acc)
-        st.session_state.show_add_account=False; st.success(f"Account '{brand}' added."); st.rerun()
+        if f5_num and (not f5_num.isdigit() or len(f5_num) != 6):
+            st.error("F5 Number must be exactly 6 digits.")
+        else:
+            ef_vals["f5_number"] = f5_num.strip()
+            logo_b64=img_to_b64(logo_file) if logo_file else None
+            new_acc={"id":f"ACC-{str(len(st.session_state.accounts)+1).zfill(4)}","account_name":acc_name,"brand_name":brand,"branches":int(branches),"sector":sector,"last_call_date":rnd_date(1),"contact_person":contact,"notes":[],"extra_fields":ef_vals,"logo_b64":logo_b64,"is_deleted":False}
+            st.session_state.accounts.append(new_acc)
+            sb_upsert_account(new_acc)
+            st.session_state.show_add_account=False; st.success(f"Account '{brand}' added."); st.rerun()
     if do_cancel: st.session_state.show_add_account=False; st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1078,7 +1092,7 @@ def render_add_account(active):
 def render_import():
     if not st.session_state.get("show_import"): return
     st.markdown("---"); st.subheader("Import accounts — CSV")
-    cols=["Account ID","Account Name","Brand Name","# of Branches","Sector","Contact Person"]+[f["label"] for f in st.session_state.account_extra_fields]
+    cols=["Account ID","Account Name","Brand Name","# of Branches","Sector","Contact Person","F5 Number"]+[f["label"] for f in st.session_state.account_extra_fields]
     tmpl=pd.DataFrame(columns=cols)
     st.download_button("Download CSV template", tmpl.to_csv(index=False).encode(), "accounts_template.csv","text/csv",key="dl_acc_tmpl")
     mode=st.radio("Import mode",["Add new rows","Update existing by Account ID","Add new + update existing"],horizontal=True,key="import_mode")
@@ -1105,7 +1119,7 @@ def render_import():
                         "contact_person":str(row.get("Contact Person","")).strip(),
                         "last_call_date":str(row.get("Last Call Date",rnd_date(1))).strip() or rnd_date(1),
                         "notes":existing["notes"] if existing else [],
-                        "extra_fields":{f["id"]:str(row.get(f["label"],"")).strip() for f in st.session_state.account_extra_fields},
+                        "extra_fields":{**{f["id"]:str(row.get(f["label"],"")).strip() for f in st.session_state.account_extra_fields},"f5_number":str(row.get("F5 Number","")).strip()},
                         "logo_b64":existing["logo_b64"] if existing else None,"is_deleted":False,
                     }
                     if existing and "Update" in mode:
