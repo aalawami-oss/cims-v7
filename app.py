@@ -100,7 +100,7 @@ TEAM_COLORS = [
 ]
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
-CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","F5 Number"]
+CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","Account Owner","F5 Number"]
 BRANDS = [
     ("Al Futtaim Group","ACE Hardware"),("Alshaya Group","Starbucks ME"),
     ("Majid Al Futtaim","Mall of the Emirates"),("Jarir Bookstore","Jarir"),
@@ -475,11 +475,22 @@ def has_perm(role_id, perm):
     return False
 
 def get_active_user():
-    uid   = st.session_state.get("logged_in_user_id", "")
     users = st.session_state.get("users", [])
     if not users:
         return {"id":"","name":"Unknown","role":"viewer","email":"","color":VIOLET,"bg":VIOLET_LIGHT,"extra_fields":{}}
+    # Admin can "view as" another user
+    view_as = st.session_state.get("view_as_user_id")
+    if view_as:
+        u = next((u for u in users if u["id"]==view_as), None)
+        if u: return u
+    uid = st.session_state.get("logged_in_user_id", "")
     return next((u for u in users if u["id"]==uid), users[0])
+
+def get_logged_in_user():
+    """Always returns the actual logged-in user, ignoring view_as."""
+    users = st.session_state.get("users", [])
+    uid   = st.session_state.get("logged_in_user_id", "")
+    return next((u for u in users if u["id"]==uid), users[0] if users else None)
 
 def get_user(uid): return next((u for u in st.session_state.users if u["id"]==uid), None)
 def get_status(sid): return next((s for s in st.session_state.call_statuses if s["id"]==sid), None)
@@ -512,6 +523,11 @@ def init_state():
         "primary_color":  VIOLET,
         "light_color":    VIOLET_LIGHT,
         "button_labels":  dict(DEFAULT_BUTTON_LABELS),
+        "account_filters": {
+            "search": True, "sector": True, "urgency": True,
+            "contact": True, "assignee": True, "branches": True,
+            "account_owner": True,
+        },
     }
     _all_acc = {"view","log","acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete","import","manage_users","export","manage_schema"}
     _mgr_acc = {"view","log","acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete","import","export"}
@@ -607,6 +623,23 @@ def render_sidebar():
         st.rerun()
     if sb_col2.button("🚪 " + get_btn("logout"), use_container_width=True, key="logout_btn"):
         logout()
+
+    # ── Admin: view-as user switcher ──────────────────────────────────────────
+    real_user = get_logged_in_user()
+    if real_user and real_user.get("role") == "admin" and len(users) > 1:
+        st.sidebar.markdown("---")
+        st.sidebar.caption("👁 View as user")
+        other_users  = [u for u in users if u["id"] != real_user["id"]]
+        view_options = ["— Myself —"] + [u["name"] for u in other_users]
+        cur_view     = st.session_state.get("view_as_user_id")
+        cur_idx      = next((i+1 for i, u in enumerate(other_users) if u["id"]==cur_view), 0)
+        sel = st.sidebar.selectbox("", view_options, index=cur_idx, key="view_as_select", label_visibility="collapsed")
+        if sel == "— Myself —":
+            st.session_state.pop("view_as_user_id", None)
+        else:
+            target = next((u for u in other_users if u["name"]==sel), None)
+            if target and target["id"] != cur_view:
+                st.session_state["view_as_user_id"] = target["id"]; st.rerun()
 
     st.sidebar.markdown("---")
     overdue = sum(1 for a in accounts if days_since(a["last_call_date"]) > 14)
@@ -799,46 +832,42 @@ def render_accounts(active, is_rep):
     is_admin   = can_add or can_edit or can_delete
     st.subheader("My accounts" if is_rep else "All accounts")
 
-    # ── Column visibility ──────────────────────────────────────────────────────
-    if is_admin:
-        with st.expander("⚙️ Column settings", expanded=False):
-            all_cols = list(CORE_COLUMNS)+[f["label"] for f in st.session_state.account_extra_fields]
-            current  = st.session_state.get("visible_columns", list(CORE_COLUMNS))
-            selected = []
-            cols_ui  = st.columns(4)
-            for i,col in enumerate(all_cols):
-                if cols_ui[i%4].checkbox(col, value=col in current, key=f"col_vis_{col}"):
-                    selected.append(col)
-            if selected != current:
-                st.session_state.visible_columns = selected; st.rerun()
-
-    # ── Filters ────────────────────────────────────────────────────────────────
+    # ── Filters (configurable by admin in Account Layout) ─────────────────────
+    af = st.session_state.get("settings", {}).get("account_filters", {})
     with st.expander("🔍 Filters", expanded=False):
-        fc1,fc2,fc3,fc4,fc5,fc6 = st.columns(6)
-        f_search  = fc1.text_input("Search", placeholder="Name / brand / ID", key="f_search")
-        f_sector  = fc2.multiselect("Sector", SECTORS, key="f_sector")
-        f_urgency = fc3.selectbox("Urgency", ["All","Overdue >14d","Critical >30d","Recent ≤14d"], key="f_urgency")
-
-        all_contacts = sorted({a["contact_person"] for a in st.session_state.accounts if a.get("contact_person")})
-        f_contact = fc4.multiselect("Contact person", all_contacts, key="f_contact")
-
-        all_assignees = [u["name"] for u in st.session_state.users]
-        f_assignee = fc5.multiselect("Last called by", all_assignees, key="f_assignee")
-
+        active_filters = [k for k, v in af.items() if v]
+        n_cols = max(len(active_filters), 1)
+        fcols  = st.columns(min(n_cols, 6))
+        ci     = 0
+        f_search = f_sector = f_urgency = f_contact = f_assignee = f_account_owner = ""
+        f_branches = None; f_priority = []
         branch_vals = [a["branches"] for a in st.session_state.accounts if a.get("branches")]
         br_min = int(min(branch_vals)) if branch_vals else 0
         br_max = int(max(branch_vals)) if branch_vals else 1000
-        f_branches = fc6.slider("Branches", br_min, max(br_max,br_min+1), (br_min, max(br_max,br_min+1)), key="f_branches")
 
-        # extra filter: Priority (if it exists)
+        if af.get("search"):
+            f_search  = fcols[ci%6].text_input("Search", placeholder="Name / brand / ID", key="f_search"); ci+=1
+        if af.get("sector"):
+            f_sector  = fcols[ci%6].multiselect("Sector", SECTORS, key="f_sector"); ci+=1
+        if af.get("urgency"):
+            f_urgency = fcols[ci%6].selectbox("Urgency", ["All","Overdue >14d","Critical >30d","Recent ≤14d"], key="f_urgency"); ci+=1
+        if af.get("contact"):
+            all_contacts = sorted({a["contact_person"] for a in st.session_state.accounts if a.get("contact_person")})
+            f_contact = fcols[ci%6].multiselect("Contact person", all_contacts, key="f_contact"); ci+=1
+        if af.get("assignee"):
+            f_assignee = fcols[ci%6].multiselect("Last called by", [u["name"] for u in st.session_state.users], key="f_assignee"); ci+=1
+        if af.get("account_owner"):
+            owner_names = sorted({get_user(a.get("account_owner_id",""))["name"] for a in st.session_state.accounts if get_user(a.get("account_owner_id",""))})
+            f_account_owner = fcols[ci%6].multiselect("Account owner", owner_names, key="f_account_owner"); ci+=1
+        if af.get("branches"):
+            f_branches = st.slider("Branches", br_min, max(br_max,br_min+1), (br_min, max(br_max,br_min+1)), key="f_branches")
+
         priority_field = next((f for f in st.session_state.account_extra_fields if f["label"]=="Priority"), None)
         if priority_field and priority_field.get("options"):
             f_priority = st.multiselect("Priority", priority_field["options"], key="f_priority")
-        else:
-            f_priority = []
 
         if st.button("Clear filters", key="clear_filters"):
-            for k in ["f_search","f_sector","f_urgency","f_contact","f_assignee","f_priority"]:
+            for k in ["f_search","f_sector","f_urgency","f_contact","f_assignee","f_priority","f_account_owner"]:
                 st.session_state.pop(k, None)
             st.rerun()
 
@@ -882,6 +911,14 @@ def render_accounts(active, is_rep):
     # branches range
     br_range = st.session_state.get("f_branches",(br_min, max(br_max,br_min+1)))
     accs = [a for a in accs if br_range[0] <= int(a.get("branches",0)) <= br_range[1]]
+
+    # account owner
+    owner_filter = st.session_state.get("f_account_owner", [])
+    if owner_filter:
+        def _owner_name(a):
+            u = get_user(a.get("account_owner_id",""))
+            return u["name"] if u else None
+        accs = [a for a in accs if _owner_name(a) in owner_filter]
 
     # priority
     if f_priority:
@@ -957,6 +994,8 @@ def render_accounts(active, is_rep):
                 ci = show_in(g, "Branches",     acc["branches"],              ci)
                 ci = show_in(g, "Sector",       acc["sector"],                ci)
                 ci = show_in(g, "Contact",      acc.get("contact_person","—"),ci)
+                owner_u = get_user(acc.get("account_owner_id",""))
+                ci = show_in(g, "Account Owner", owner_u["name"] if owner_u else "—", ci)
                 if "Last Call" in vis:
                     g[ci%4].markdown(f"**Last call:** {acc['last_call_date']} &nbsp;"+urgency_badge(d), unsafe_allow_html=True); ci+=1
                 f5 = acc.get("extra_fields",{}).get("f5_number","")
@@ -1044,6 +1083,10 @@ def _render_edit_account():
         new_contact  = c5.text_input("Contact person", value=acc.get("contact_person",""), disabled=not can_gen)
         cur_f5 = acc.get("extra_fields",{}).get("f5_number","")
         new_f5 = c6.text_input("F5 Number", value=cur_f5, placeholder="6-digit number", max_chars=6, key=f"f5_{acc_id}", disabled=not can_f5)
+        user_names_edit = ["— None —"] + [u["name"] for u in st.session_state.users]
+        cur_owner = get_user(acc.get("account_owner_id",""))
+        cur_owner_idx = user_names_edit.index(cur_owner["name"]) if cur_owner and cur_owner["name"] in user_names_edit else 0
+        new_owner_sel = st.selectbox("Account Owner", user_names_edit, index=cur_owner_idx, key=f"owner_{acc_id}", disabled=not can_gen)
         new_logo_f   = st.file_uploader("Brand logo (PNG/JPG)", type=["png","jpg","jpeg"], key=f"logo_up_{acc_id}")
         ef_vals = {}
         for f in st.session_state.account_extra_fields:
@@ -1060,10 +1103,11 @@ def _render_edit_account():
             st.error("F5 Number must be exactly 6 digits.")
         else:
             ef_vals["f5_number"] = new_f5.strip()
+            new_owner_id = next((u["id"] for u in st.session_state.users if u["name"]==new_owner_sel), "") if new_owner_sel != "— None —" else ""
             new_b64 = img_to_b64(new_logo_f) if new_logo_f else acc.get("logo_b64")
             for i,a in enumerate(st.session_state.accounts):
                 if a["id"]==acc_id:
-                    st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"extra_fields":ef_vals,"logo_b64":new_b64}
+                    st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"account_owner_id":new_owner_id,"extra_fields":ef_vals,"logo_b64":new_b64}
                     sb_upsert_account(st.session_state.accounts[i]); break
             del st.session_state["editing_account"]; st.success("Account updated."); st.rerun()
     if do_clear:
@@ -1160,8 +1204,10 @@ def render_users(active):
                     st.caption(f"{len(df)} rows"); st.dataframe(df.head(), use_container_width=True)
                     mode=st.radio("Mode",["Add new","Update existing by email"],horizontal=True,key="bulk_u_mode")
                     if st.button("Import users", type="primary", key="do_bulk_users"):
-                        added=updated=skipped=0
-                        for _,row in df.iterrows():
+                        added=updated=skipped=0; total_u=max(len(df),1)
+                        prog_u=st.progress(0, text="Importing users…")
+                        for i,(_, row) in enumerate(df.iterrows()):
+                            prog_u.progress((i+1)/total_u, text=f"Row {i+1} of {total_u}…")
                             name=str(row.get("Name","")).strip(); email=str(row.get("Email","")).strip()
                             role_raw=str(row.iloc[2] if len(row)>2 else "viewer").strip().lower()
                             if not name or not email: skipped+=1; continue
@@ -1174,19 +1220,36 @@ def render_users(active):
                                 new_u={"id":"u"+new_id(),"name":name,"email":email,"role":role_val,"extra_fields":{},"color":c["color"],"bg":c["bg"]}
                                 st.session_state.users.append(new_u); sb_upsert_user(new_u); added+=1
                             else: skipped+=1
+                        prog_u.empty()
                         st.success(f"Done: {added} added · {updated} updated · {skipped} skipped"); st.rerun()
                 except Exception as ex: st.error(f"CSV error: {ex}")
+    # ── Column headers ────────────────────────────────────────────────────────
+    pc = st.session_state.get("settings",{}).get("primary_color", VIOLET)
+    lc = st.session_state.get("settings",{}).get("light_color",   VIOLET_LIGHT)
+    hc1,hc2,hc3,hc4,hc5 = st.columns([1,3,3,2,2])
+    for col, label in zip([hc1,hc2,hc3,hc4,hc5],["","Name","Email","Role","Actions"]):
+        col.markdown(f"<small style='color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.06em'>{label}</small>", unsafe_allow_html=True)
+    st.markdown(f"<hr style='margin:4px 0 8px;border-color:{lc}'>", unsafe_allow_html=True)
+
     for u in st.session_state.users:
-        c1,c2,c3=st.columns([3,1,2]) if is_admin else st.columns([4,1,1])
-        c1.markdown(f"**{u['name']}** &nbsp;<small style='color:#888'>{u['email']}</small>", unsafe_allow_html=True)
-        c2.markdown(role_badge_html(u["role"]), unsafe_allow_html=True)
+        uc1,uc2,uc3,uc4,uc5 = st.columns([1,3,3,2,2])
+        # Avatar
+        ph = (u.get("extra_fields") or {}).get("_photo")
+        if ph:
+            uc1.markdown(f'<img src="data:image/png;base64,{ph}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">', unsafe_allow_html=True)
+        else:
+            ini = initials(u["name"])
+            uc1.markdown(f'<div style="width:36px;height:36px;border-radius:50%;background:{pc};display:inline-flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px">{ini}</div>', unsafe_allow_html=True)
+        uc2.markdown(f"**{u['name']}**")
+        uc3.markdown(f"<small style='color:#555'>{u['email']}</small>", unsafe_allow_html=True)
+        uc4.markdown(role_badge_html(u["role"]), unsafe_allow_html=True)
         if is_admin:
-            b1,b2=c3.columns(2)
-            if b1.button("Edit",key=f"eu_{u['id']}"): st.session_state.editing_user=u["id"]; st.rerun()
-            if u["id"]!=active["id"] and b2.button("Delete",key=f"du_{u['id']}"):
+            b1,b2 = uc5.columns(2)
+            if b1.button("Edit",   key=f"eu_{u['id']}", use_container_width=True): st.session_state.editing_user=u["id"]; st.rerun()
+            if u["id"]!=active["id"] and b2.button("Del", key=f"du_{u['id']}", use_container_width=True):
                 st.session_state.users=[x for x in st.session_state.users if x["id"]!=u["id"]]
                 sb_delete_user(u["id"]); st.rerun()
-        st.divider()
+        st.markdown(f"<div style='height:1px;background:{lc};margin:2px 0 8px'></div>", unsafe_allow_html=True)
     if is_admin and st.button(get_btn("add_user"), type="primary", key="add_user_btn"):
         st.session_state.editing_user="__new__"; st.rerun()
     if st.session_state.get("editing_user"):
@@ -1247,54 +1310,15 @@ def render_schema():
             c3.markdown(f'<span class="badge-info">{ent}</span>', unsafe_allow_html=True)
             c4.markdown(", ".join((f.get("options") or [])[:5]) or "—")
             if c5.button("Edit", key=f"ef_edit_{f['id']}"):
-                st.session_state["editing_field"]        = f["id"]
-                st.session_state["editing_field_entity"] = ent
-                st.rerun()
+                st.session_state["dlg_field_id"]     = f["id"]
+                st.session_state["dlg_field_entity"] = ent
+                _edit_field_dialog()
             if c6.button("Remove", key=f"df_{f['id']}"):
                 if ent=="Account": st.session_state.account_extra_fields=[x for x in st.session_state.account_extra_fields if x["id"]!=f["id"]]
                 elif ent=="User":  st.session_state.user_extra_fields=[x for x in st.session_state.user_extra_fields if x["id"]!=f["id"]]
                 else:              st.session_state.call_extra_fields=[x for x in st.session_state.call_extra_fields if x["id"]!=f["id"]]
-                if st.session_state.get("editing_field") == f["id"]:
-                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
                 if ent == "Account": save_layout()
                 st.rerun()
-
-            # Inline edit form for this field
-            if st.session_state.get("editing_field") == f["id"]:
-                with st.container():
-                    st.markdown(f"<div style='background:#f9f7ff;border-left:3px solid {VIOLET};padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:8px'>", unsafe_allow_html=True)
-                    with st.form(f"edit_field_{f['id']}"):
-                        ef1,ef2 = st.columns(2)
-                        new_lbl  = ef1.text_input("Label", value=f["label"])
-                        type_idx = FIELD_TYPES.index(f.get("type","text")) if f.get("type","text") in FIELD_TYPES else 0
-                        new_type = ef2.selectbox("Type", FIELD_TYPES, index=type_idx)
-                        cur_opts = ", ".join(f.get("options") or [])
-                        new_opts_str = st.text_input(
-                            "Options (comma-separated — only used for 'select' type)",
-                            value=cur_opts,
-                            placeholder="e.g. High, Medium, Low"
-                        )
-                        es1, es2 = st.columns(2)
-                        do_ef_save   = es1.form_submit_button("Save changes", type="primary")
-                        do_ef_cancel = es2.form_submit_button("Cancel")
-                    st.markdown("</div>", unsafe_allow_html=True)
-                if do_ef_save and new_lbl.strip():
-                    new_opts = [o.strip() for o in new_opts_str.split(",") if o.strip()] if new_type == "select" else []
-                    target = (
-                        st.session_state.account_extra_fields if ent=="Account" else
-                        st.session_state.user_extra_fields    if ent=="User"    else
-                        st.session_state.call_extra_fields
-                    )
-                    for i, fld in enumerate(target):
-                        if fld["id"] == f["id"]:
-                            target[i] = {**fld, "label": new_lbl.strip(), "type": new_type, "options": new_opts}
-                            break
-                    if ent == "Account": save_layout()
-                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
-                    st.rerun()
-                if do_ef_cancel:
-                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
-                    st.rerun()
 
         st.markdown("---"); st.markdown("**Add field**")
         with st.form("add_field"):
@@ -1308,8 +1332,39 @@ def render_schema():
                 st.rerun()
     with t2:
         st.subheader("Account Layout")
-        st.caption("Organize custom fields into sections and reorder them. Changes persist to Supabase.")
+        st.caption("Column visibility, active filters, sections and field ordering — all persisted to Supabase.")
 
+        # ── Column Visibility ──────────────────────────────────────────────────
+        st.markdown("#### Column Visibility")
+        all_cols = list(CORE_COLUMNS) + [f["label"] for f in st.session_state.account_extra_fields]
+        current  = st.session_state.get("visible_columns", list(CORE_COLUMNS))
+        col_grid = st.columns(4); new_vis = []
+        for i, col in enumerate(all_cols):
+            if col_grid[i%4].checkbox(col, value=col in current, key=f"layout_col_vis_{col}"):
+                new_vis.append(col)
+        if new_vis != current:
+            st.session_state.visible_columns = new_vis; st.rerun()
+
+        # ── Filter Management ──────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Active Filters")
+        st.caption("Toggle which filters appear in the Accounts tab.")
+        s_obj = st.session_state.settings
+        af    = s_obj.get("account_filters", {})
+        FILTER_LABELS = {
+            "search": "Search (text)", "sector": "Sector", "urgency": "Urgency",
+            "contact": "Contact person", "assignee": "Last called by",
+            "account_owner": "Account owner", "branches": "Branches (slider)",
+        }
+        fg = st.columns(3); changed = False
+        for i, (fk, fl) in enumerate(FILTER_LABELS.items()):
+            new_val = fg[i%3].checkbox(fl, value=af.get(fk, True), key=f"af_toggle_{fk}")
+            if new_val != af.get(fk, True):
+                af[fk] = new_val; changed = True
+        if changed:
+            s_obj["account_filters"] = af; save_settings(); st.rerun()
+
+        st.markdown("---")
         sections = st.session_state.account_sections
         fields   = st.session_state.account_extra_fields
         sections_sorted = sorted(sections, key=lambda x: x.get("sort_order", 99))
@@ -1585,6 +1640,8 @@ def render_add_account(active):
         c1,c2=st.columns(2); acc_name=c1.text_input("Account name",placeholder="Legal entity"); brand=c2.text_input("Brand name",placeholder="Public name")
         c3,c4=st.columns(2); branches=c3.number_input("# of branches",min_value=1,value=10); sector=c4.selectbox("Sector",SECTORS)
         c5,c6=st.columns(2); contact=c5.text_input("Contact person"); f5_num=c6.text_input("F5 Number",placeholder="6-digit number",max_chars=6)
+        user_names=["— None —"]+[u["name"] for u in st.session_state.users]
+        owner_sel=st.selectbox("Account Owner",user_names,key="new_acc_owner")
         logo_file=st.file_uploader("Brand logo (PNG/JPG, optional)",type=["png","jpg","jpeg"],key="new_acc_logo")
         ef_vals={}
         for f in st.session_state.account_extra_fields:
@@ -1596,15 +1653,115 @@ def render_add_account(active):
             st.error("F5 Number must be exactly 6 digits.")
         else:
             ef_vals["f5_number"] = f5_num.strip()
+            owner_id = next((u["id"] for u in st.session_state.users if u["name"]==owner_sel), "") if owner_sel != "— None —" else ""
             logo_b64=img_to_b64(logo_file) if logo_file else None
-            new_acc={"id":f"ACC-{str(len(st.session_state.accounts)+1).zfill(4)}","account_name":acc_name,"brand_name":brand,"branches":int(branches),"sector":sector,"last_call_date":rnd_date(1),"contact_person":contact,"notes":[],"extra_fields":ef_vals,"logo_b64":logo_b64,"is_deleted":False}
+            new_acc={"id":f"ACC-{str(len(st.session_state.accounts)+1).zfill(4)}","account_name":acc_name,"brand_name":brand,"branches":int(branches),"sector":sector,"last_call_date":rnd_date(1),"contact_person":contact,"account_owner_id":owner_id,"notes":[],"extra_fields":ef_vals,"logo_b64":logo_b64,"is_deleted":False}
             st.session_state.accounts.append(new_acc)
             sb_upsert_account(new_acc)
             st.session_state.show_add_account=False; st.success(f"Account '{brand}' added."); st.rerun()
     if do_cancel: st.session_state.show_add_account=False; st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# IMPORT CSV
+# DIALOGS
+# ══════════════════════════════════════════════════════════════════════════════
+@st.dialog("Import Accounts", width="large")
+def _import_dialog():
+    cols = (["Account ID","Account Name","Brand Name","# of Branches","Sector",
+             "Contact Person","Account Owner","F5 Number"] +
+            [f["label"] for f in st.session_state.account_extra_fields])
+    tmpl = pd.DataFrame(columns=cols)
+    dl1, dl2 = st.columns(2)
+    dl1.download_button("⬇ CSV template",   tmpl.to_csv(index=False).encode(),       "accounts_template.csv",  "text/csv",                                                           key="dlg_tmpl_csv")
+    dl2.download_button("⬇ Excel template", df_to_excel_bytes(tmpl),                 "accounts_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dlg_tmpl_xl")
+    mode = st.radio("Import mode", ["Add new rows","Update existing by Account ID","Add new + update existing"], horizontal=True, key="dlg_import_mode")
+    uploaded = st.file_uploader("Upload CSV, XLSX or XLS", type=["csv","xlsx","xls"], key="dlg_acc_upload")
+    if uploaded:
+        try:
+            df = read_upload(uploaded); df.columns = [c.strip() for c in df.columns]
+            st.caption(f"{len(df)} rows · {uploaded.name}")
+            st.dataframe(df.head(5), use_container_width=True)
+            if st.button("Confirm import", type="primary", key="dlg_confirm_import"):
+                added = updated = skipped = 0; bulk_new = []; bulk_update = []
+                prog = st.progress(0, text="Preparing…"); total = max(len(df), 1)
+                for i, (_, row) in enumerate(df.iterrows()):
+                    prog.progress((i + 1) / total, text=f"Row {i+1} of {total}…")
+                    acc_name  = str(row.get("Account Name","")).strip()
+                    brand_name = str(row.get("Brand Name","")).strip()
+                    if not acc_name or not brand_name: skipped += 1; continue
+                    br_raw = row.get("# of Branches", 0)
+                    try: branches = int(float(str(br_raw))) if str(br_raw).strip() not in ("","nan") else 0
+                    except: branches = 0
+                    acc_id_raw = str(row.get("Account ID","")).strip()
+                    existing   = next((a for a in st.session_state.accounts if a["id"]==acc_id_raw), None) if acc_id_raw and acc_id_raw.lower()!="nan" else None
+                    # Resolve account owner by name
+                    owner_name = str(row.get("Account Owner","")).strip()
+                    owner_id   = next((u["id"] for u in st.session_state.users if u["name"].lower()==owner_name.lower()), "")
+                    new_acc = {
+                        "id": existing["id"] if existing else (acc_id_raw if acc_id_raw and acc_id_raw.lower()!="nan" else f"ACC-{str(len(st.session_state.accounts)+added+1).zfill(4)}"),
+                        "account_name": acc_name, "brand_name": brand_name, "branches": branches,
+                        "sector":         str(row.get("Sector","Retail")).strip() or "Retail",
+                        "contact_person": str(row.get("Contact Person","")).strip(),
+                        "account_owner_id": owner_id,
+                        "last_call_date": str(row.get("Last Call Date", rnd_date(1))).strip() or rnd_date(1),
+                        "notes": existing["notes"] if existing else [],
+                        "extra_fields": {**{f["id"]: str(row.get(f["label"],"")).strip() for f in st.session_state.account_extra_fields}, "f5_number": str(row.get("F5 Number","")).strip()},
+                        "logo_b64": existing["logo_b64"] if existing else None, "is_deleted": False,
+                    }
+                    if existing and "Update" in mode:
+                        idx = st.session_state.accounts.index(existing); st.session_state.accounts[idx] = new_acc; bulk_update.append(new_acc); updated += 1
+                    elif not existing:
+                        st.session_state.accounts.append(new_acc); bulk_new.append(new_acc); added += 1
+                    else:
+                        skipped += 1
+                prog.empty()
+                all_to_write = bulk_new + bulk_update
+                if all_to_write: sb_upsert_accounts_bulk(all_to_write)
+                st.success(f"Done — {added} added · {updated} updated · {skipped} skipped")
+                st.rerun()
+        except Exception as ex:
+            st.error(f"Import error: {ex}")
+
+
+@st.dialog("Edit Custom Field")
+def _edit_field_dialog():
+    field_id = st.session_state.get("dlg_field_id")
+    entity   = st.session_state.get("dlg_field_entity")
+    FTYPES   = ["text","number","date","select"]
+    target   = (st.session_state.account_extra_fields if entity=="Account" else
+                st.session_state.user_extra_fields    if entity=="User"    else
+                st.session_state.call_extra_fields)
+    f = next((x for x in target if x["id"] == field_id), None)
+    if not f: st.error("Field not found."); return
+    st.caption(f"Applies to **{entity}** · id: `{field_id}`")
+    with st.form("dlg_edit_field_form"):
+        ef1, ef2 = st.columns(2)
+        new_lbl      = ef1.text_input("Label",  value=f["label"])
+        type_idx     = FTYPES.index(f.get("type","text")) if f.get("type","text") in FTYPES else 0
+        new_type     = ef2.selectbox("Type",    FTYPES, index=type_idx)
+        new_opts_str = st.text_input(
+            "Options — comma-separated (for 'select' type only)",
+            value=", ".join(f.get("options") or []),
+            placeholder="e.g. High, Medium, Low"
+        )
+        es1, es2 = st.columns(2)
+        do_save   = es1.form_submit_button("Save changes", type="primary")
+        do_cancel = es2.form_submit_button("Cancel")
+    if do_save and new_lbl.strip():
+        new_opts = [o.strip() for o in new_opts_str.split(",") if o.strip()] if new_type=="select" else []
+        for i, fld in enumerate(target):
+            if fld["id"] == field_id:
+                target[i] = {**fld, "label": new_lbl.strip(), "type": new_type, "options": new_opts}
+                break
+        if entity == "Account": save_layout()
+        st.session_state.pop("dlg_field_id", None); st.session_state.pop("dlg_field_entity", None)
+        st.rerun()
+    if do_cancel:
+        st.session_state.pop("dlg_field_id", None); st.session_state.pop("dlg_field_entity", None)
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IMPORT CSV  (legacy inline — kept for backward compat, unused when dialogs on)
 # ══════════════════════════════════════════════════════════════════════════════
 def render_import():
     if not st.session_state.get("show_import"): return
@@ -1673,23 +1830,28 @@ def main():
 
     render_profile()
 
+    # View-as banner
+    if st.session_state.get("view_as_user_id"):
+        real = get_logged_in_user()
+        pc   = st.session_state.settings.get("primary_color", VIOLET)
+        st.markdown(f'<div style="background:#fff8e1;border:1px solid #ffc107;border-radius:8px;padding:8px 14px;margin-bottom:8px;font-size:13px">👁 <strong>Viewing as {active["name"]}</strong> — permissions and filters reflect their role. <em>Switch back via the sidebar.</em></div>', unsafe_allow_html=True)
+
     s  = st.session_state.settings
     tc = st.columns([4,1,1])
     tc[0].title(s.get("system_name","Client Interaction Management"))
     with tc[1]:
         if has_perm(active["role"],"import") and st.button(get_btn("import_csv"),use_container_width=True,key="top_import"):
-            st.session_state.show_import=True; st.session_state.show_add_account=False; st.session_state.show_log_modal=False
+            _import_dialog()
     with tc[2]:
         if has_perm(active["role"],"acc_add") and st.button(get_btn("add_account"),type="primary",use_container_width=True,key="top_add"):
-            st.session_state.show_add_account=True; st.session_state.show_import=False; st.session_state.show_log_modal=False
+            st.session_state.show_add_account=True; st.session_state.show_log_modal=False
 
     render_add_account(active)
-    render_import()
     render_log_modal(active)
 
     urgency_count = sum(1 for a in st.session_state.accounts if days_since(a["last_call_date"])>14)
     tab_labels = ["Dashboard","Accounts",f"Urgency ({urgency_count})","Activity Log","Users","Deleted Accounts"]
-    if has_perm(active["role"],"manage_schema"): tab_labels.append("Field Builder & Roles")
+    if has_perm(active["role"],"manage_schema"): tab_labels.append("System Settings")
 
     tabs = st.tabs(tab_labels)
     with tabs[0]: render_dashboard(active, is_rep)
