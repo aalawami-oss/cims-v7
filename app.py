@@ -172,6 +172,32 @@ def logout():
         del st.session_state[key]
     st.rerun()
 
+def save_layout():
+    """Persist section/field layout to admin user's extra_fields._layout in Supabase."""
+    sb = get_supabase()
+    if not sb:
+        return
+    admin = next((u for u in st.session_state.get("users", []) if u.get("role") == "admin"), None)
+    if not admin:
+        return
+    ef = admin.get("extra_fields") or {}
+    if isinstance(ef, str):
+        try: ef = json.loads(ef)
+        except: ef = {}
+    # Strip internal _pw from layout copy
+    ef["_layout"] = {
+        "sections": st.session_state.get("account_sections", []),
+        "account_extra_fields": st.session_state.get("account_extra_fields", []),
+    }
+    for i, u in enumerate(st.session_state.users):
+        if u["id"] == admin["id"]:
+            st.session_state.users[i]["extra_fields"] = ef
+            break
+    try:
+        sb.table("users").update({"extra_fields": json.dumps(ef)}).eq("id", admin["id"]).execute()
+    except Exception as e:
+        st.warning(f"Layout save failed: {e}")
+
 # ══ Supabase CRUD helpers ══════════════════════════════════════════════════════
 
 def sb_fetch_accounts():
@@ -398,19 +424,33 @@ def init_state():
         {"id":"cs6","label":"Voicemail Left",    "color":"#6C3FC5"},
     ]
     st.session_state.account_extra_fields = [
-        {"id":"ef1","label":"Region",  "type":"text",  "options":[]},
-        {"id":"ef2","label":"Priority","type":"select","options":["High","Medium","Low"]},
+        {"id":"ef1","label":"Region",  "type":"text",  "options":[], "sort_order":0, "section_id":None},
+        {"id":"ef2","label":"Priority","type":"select","options":["High","Medium","Low"], "sort_order":1, "section_id":None},
     ]
     st.session_state.user_extra_fields   = [{"id":"uf1","label":"Phone","type":"text","options":[]},{"id":"uf2","label":"Territory","type":"text","options":[]}]
     st.session_state.call_extra_fields   = [{"id":"cf1","label":"Deal Size","type":"text","options":[]},{"id":"cf2","label":"Next Step","type":"text","options":[]}]
     st.session_state.visible_columns     = list(CORE_COLUMNS)
     st.session_state.selected_accounts   = set()
+    st.session_state.account_sections    = []   # {"id","label","sort_order"}
 
     # Load from Supabase — no mock fallback; only mark initialized if connected
     if not sb_available():
         return
     users    = sb_fetch_users()
     accounts = sb_fetch_accounts()
+
+    # Load saved layout from admin user's extra_fields
+    admin = next((u for u in users if u.get("role") == "admin"), None)
+    if admin:
+        ef = admin.get("extra_fields") or {}
+        if isinstance(ef, str):
+            try: ef = json.loads(ef)
+            except: ef = {}
+        layout = ef.get("_layout", {})
+        if layout.get("sections") is not None:
+            st.session_state.account_sections = layout["sections"]
+        if layout.get("account_extra_fields"):
+            st.session_state.account_extra_fields = layout["account_extra_fields"]
 
     st.session_state.users    = users
     st.session_state.accounts = accounts
@@ -692,23 +732,58 @@ def render_accounts(active, is_rep):
             info_c   = row_cols[1] if acc.get("logo_b64") else row_cols[0]
             if acc.get("logo_b64"): row_cols[0].markdown(logo_md, unsafe_allow_html=True)
             with info_c:
+                # ── Core fields grid ───────────────────────────────────────────
                 g = st.columns(4); ci = 0
-                def show(label, val):
-                    nonlocal ci
-                    if label in vis: g[ci%4].markdown(f"**{label}:** {val}"); ci+=1
-                show("ID", f"`{acc['id']}`")
-                show("Account Name", acc["account_name"])
-                show("Brand Name",   acc["brand_name"])
-                show("Branches",     acc["branches"])
-                show("Sector",       acc["sector"])
-                show("Contact",      acc.get("contact_person","—"))
+                def show_in(grid, label, val, idx):
+                    if label in vis:
+                        grid[idx%4].markdown(f"**{label}:** {val}")
+                        return idx + 1
+                    return idx
+                ci = show_in(g, "ID",           f"`{acc['id']}`",            ci)
+                ci = show_in(g, "Account Name", acc["account_name"],          ci)
+                ci = show_in(g, "Brand Name",   acc["brand_name"],            ci)
+                ci = show_in(g, "Branches",     acc["branches"],              ci)
+                ci = show_in(g, "Sector",       acc["sector"],                ci)
+                ci = show_in(g, "Contact",      acc.get("contact_person","—"),ci)
                 if "Last Call" in vis:
                     g[ci%4].markdown(f"**Last call:** {acc['last_call_date']} &nbsp;"+urgency_badge(d), unsafe_allow_html=True); ci+=1
                 f5 = acc.get("extra_fields",{}).get("f5_number","")
-                if f5: show("F5 Number", f5)
-                for f in st.session_state.account_extra_fields:
+                if f5: ci = show_in(g, "F5 Number", f5, ci)
+
+                # ── Custom fields — grouped by section ─────────────────────────
+                extra_fields_sorted = sorted(
+                    st.session_state.account_extra_fields,
+                    key=lambda x: x.get("sort_order", 99)
+                )
+                sections = sorted(
+                    st.session_state.get("account_sections", []),
+                    key=lambda x: x.get("sort_order", 99)
+                )
+                assigned_to_section = {f["id"] for f in extra_fields_sorted if f.get("section_id")}
+
+                for sec in sections:
+                    sec_fields = [f for f in extra_fields_sorted if f.get("section_id") == sec["id"]]
+                    sec_vals   = [(f, acc.get("extra_fields",{}).get(f["id"],"")) for f in sec_fields]
+                    sec_vals   = [(f, v) for f, v in sec_vals if v and f["label"] in vis]
+                    if not sec_vals:
+                        continue
+                    st.markdown(
+                        f'<div style="margin-top:12px;margin-bottom:6px;font-weight:600;'
+                        f'color:{VIOLET};border-bottom:2px solid {VIOLET_LIGHT};padding-bottom:3px">'
+                        f'{sec["label"]}</div>',
+                        unsafe_allow_html=True
+                    )
+                    sg = st.columns(4); si = 0
+                    for f, val in sec_vals:
+                        sg[si%4].markdown(f"**{f['label']}:** {val}"); si+=1
+
+                # Unsectioned custom fields (no section assigned)
+                unsectioned = [f for f in extra_fields_sorted if f["id"] not in assigned_to_section]
+                ug = st.columns(4); ui = 0
+                for f in unsectioned:
                     val = acc.get("extra_fields",{}).get(f["id"],"")
-                    if val: show(f["label"], val)
+                    if val and f["label"] in vis:
+                        ug[ui%4].markdown(f"**{f['label']}:** {val}"); ui+=1
             st.markdown(f"**Last logged by:** {last_by}")
 
             if acc.get("notes"):
@@ -939,7 +1014,7 @@ def render_users(active):
 # FIELD BUILDER + ROLES + SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 def render_schema():
-    t1,t2,t3,t4=st.tabs(["Custom Fields","Call Statuses","Role Manager","System Settings"])
+    t1,t2,t3,t4,t5=st.tabs(["Custom Fields","Account Layout","Call Statuses","Role Manager","System Settings"])
     with t1:
         st.subheader("Custom fields")
         all_fields=([(f,"Account") for f in st.session_state.account_extra_fields]+[(f,"User") for f in st.session_state.user_extra_fields]+[(f,"Call") for f in st.session_state.call_extra_fields])
@@ -963,6 +1038,114 @@ def render_schema():
                 else: st.session_state.call_extra_fields.append(nf)
                 st.rerun()
     with t2:
+        st.subheader("Account Layout")
+        st.caption("Organize custom fields into sections and reorder them. Changes persist to Supabase.")
+
+        sections = st.session_state.account_sections
+        fields   = st.session_state.account_extra_fields
+        sections_sorted = sorted(sections, key=lambda x: x.get("sort_order", 99))
+
+        # ── Sections CRUD ──────────────────────────────────────────────────────
+        st.markdown("#### Sections")
+        if not sections_sorted:
+            st.caption("No sections yet. Add one below to group your fields.")
+
+        for idx, sec in enumerate(sections_sorted):
+            sc1, sc2, sc3, sc4, sc5 = st.columns([4, 1, 1, 1, 1])
+            if st.session_state.get("renaming_section") == sec["id"]:
+                new_lbl = sc1.text_input("Rename", value=sec["label"], key=f"ren_lbl_{sec['id']}", label_visibility="collapsed")
+                if sc2.button("✓", key=f"ren_ok_{sec['id']}"):
+                    sec["label"] = new_lbl.strip() or sec["label"]
+                    st.session_state.pop("renaming_section", None)
+                    save_layout(); st.rerun()
+                if sc3.button("✗", key=f"ren_no_{sec['id']}"):
+                    st.session_state.pop("renaming_section", None); st.rerun()
+            else:
+                sc1.markdown(f"**{sec['label']}**")
+                if sc2.button("⬆", key=f"sec_up_{sec['id']}", disabled=(idx == 0)):
+                    tmp = sections_sorted[:]
+                    tmp[idx], tmp[idx-1] = tmp[idx-1], tmp[idx]
+                    for i, s in enumerate(tmp): s["sort_order"] = i
+                    save_layout(); st.rerun()
+                if sc3.button("⬇", key=f"sec_dn_{sec['id']}", disabled=(idx == len(sections_sorted)-1)):
+                    tmp = sections_sorted[:]
+                    tmp[idx], tmp[idx+1] = tmp[idx+1], tmp[idx]
+                    for i, s in enumerate(tmp): s["sort_order"] = i
+                    save_layout(); st.rerun()
+                if sc4.button("✏️", key=f"sec_edit_{sec['id']}"):
+                    st.session_state["renaming_section"] = sec["id"]; st.rerun()
+                if sc5.button("🗑️", key=f"sec_del_{sec['id']}"):
+                    for f in st.session_state.account_extra_fields:
+                        if f.get("section_id") == sec["id"]:
+                            f["section_id"] = None
+                    st.session_state.account_sections = [s for s in st.session_state.account_sections if s["id"] != sec["id"]]
+                    save_layout(); st.rerun()
+
+        st.markdown("---")
+        with st.form("add_section_form"):
+            new_sec_lbl = st.text_input("New section name", placeholder="e.g. Contract Info")
+            if st.form_submit_button("Add section", type="primary") and new_sec_lbl.strip():
+                max_ord = max((s.get("sort_order", 0) for s in sections), default=-1) + 1
+                st.session_state.account_sections.append({
+                    "id":         "sec" + new_id(),
+                    "label":      new_sec_lbl.strip(),
+                    "sort_order": max_ord,
+                })
+                save_layout(); st.rerun()
+
+        # ── Field ordering & section assignment ────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Fields")
+        if not fields:
+            st.caption("No custom fields defined. Add fields in the Custom Fields tab.")
+        else:
+            section_opts        = ["— None —"] + [s["label"] for s in sections_sorted]
+            section_id_by_label = {s["label"]: s["id"] for s in sections_sorted}
+            section_lbl_by_id   = {s["id"]: s["label"] for s in sections_sorted}
+
+            hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 1])
+            hc1.caption("Field"); hc2.caption("Section"); hc3.caption(""); hc4.caption("")
+
+            # Render unsectioned group first, then each section group
+            groups = [("Unsectioned", None)] + [(s["label"], s["id"]) for s in sections_sorted]
+            for grp_label, grp_id in groups:
+                grp_fields = sorted(
+                    [f for f in fields if f.get("section_id") == grp_id],
+                    key=lambda x: x.get("sort_order", 99)
+                )
+                if not grp_fields:
+                    continue
+                st.markdown(f"**{grp_label}**")
+                for i, f in enumerate(grp_fields):
+                    fc1, fc2, fc3, fc4 = st.columns([3, 2, 1, 1])
+                    fc1.markdown(f"{f['label']} `{f['type']}`")
+
+                    cur_lbl = section_lbl_by_id.get(f.get("section_id"), "— None —")
+                    cur_idx = section_opts.index(cur_lbl) if cur_lbl in section_opts else 0
+                    new_lbl = fc2.selectbox(
+                        "", section_opts, index=cur_idx,
+                        key=f"fsec_{f['id']}", label_visibility="collapsed"
+                    )
+                    new_sid = section_id_by_label.get(new_lbl) if new_lbl != "— None —" else None
+                    if new_sid != f.get("section_id"):
+                        f["section_id"] = new_sid
+                        # Reset sort_order to end of new group
+                        max_so = max((x.get("sort_order", 0) for x in fields if x.get("section_id") == new_sid and x["id"] != f["id"]), default=-1)
+                        f["sort_order"] = max_so + 1
+                        save_layout(); st.rerun()
+
+                    if fc3.button("⬆", key=f"fup_{f['id']}", disabled=(i == 0)):
+                        tmp = grp_fields[:]
+                        tmp[i], tmp[i-1] = tmp[i-1], tmp[i]
+                        for j, x in enumerate(tmp): x["sort_order"] = j
+                        save_layout(); st.rerun()
+                    if fc4.button("⬇", key=f"fdn_{f['id']}", disabled=(i == len(grp_fields)-1)):
+                        tmp = grp_fields[:]
+                        tmp[i], tmp[i+1] = tmp[i+1], tmp[i]
+                        for j, x in enumerate(tmp): x["sort_order"] = j
+                        save_layout(); st.rerun()
+
+    with t3:
         st.subheader("Call status options")
         for s in st.session_state.call_statuses:
             c1,c2,c3=st.columns([3,1,1]); c1.markdown(f'<span style="display:inline-flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:{s["color"]};display:inline-block"></span>{s["label"]}</span>',unsafe_allow_html=True)
@@ -981,7 +1164,7 @@ def render_schema():
         with st.form("add_status"):
             sc1,sc2=st.columns([3,1]); new_slbl=sc1.text_input("Label"); new_scol=sc2.color_picker("Color",VIOLET)
             if st.form_submit_button("Add",type="primary") and new_slbl: st.session_state.call_statuses.append({"id":"cs"+new_id(),"label":new_slbl,"color":new_scol}); st.rerun()
-    with t3:
+    with t4:
         st.subheader("Role manager"); PROTECTED={"admin","manager","rep","viewer"}
         for role in st.session_state.roles:
             with st.expander(f"**{role['label']}** ({role['id']})",expanded=False):
@@ -1017,7 +1200,7 @@ def render_schema():
         st.markdown("---"); st.subheader("Permissions matrix")
         mat={pl:{r["label"]:("✓" if pk in (r.get("perms") or set()) else "✕") for r in st.session_state.roles} for pk,pl in ALL_PERMS}
         st.dataframe(pd.DataFrame(mat).T, use_container_width=True)
-    with t4:
+    with t5:
         st.subheader("System settings"); s=st.session_state.settings
         with st.form("sys_settings"):
             new_name=st.text_input("System name",value=s.get("system_name","CIMS"))
