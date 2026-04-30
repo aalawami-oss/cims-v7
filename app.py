@@ -619,8 +619,7 @@ def render_sidebar():
     st.sidebar.markdown("")
     sb_col1, sb_col2 = st.sidebar.columns(2)
     if sb_col1.button("👤 Profile", use_container_width=True, key="profile_btn"):
-        st.session_state["show_profile"] = not st.session_state.get("show_profile", False)
-        st.rerun()
+        render_profile()
     if sb_col2.button("🚪 " + get_btn("logout"), use_container_width=True, key="logout_btn"):
         logout()
 
@@ -648,36 +647,34 @@ def render_sidebar():
     st.sidebar.metric("Team", len(users))
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PROFILE
+# PROFILE  (modal dialog)
 # ══════════════════════════════════════════════════════════════════════════════
+@st.dialog("My Profile")
 def render_profile():
-    if not st.session_state.get("show_profile"): return
-    active = get_active_user()
-    st.markdown("---")
-
-    pc = st.session_state.get("settings", {}).get("primary_color", VIOLET)
-    lc = st.session_state.get("settings", {}).get("light_color",   VIOLET_LIGHT)
+    active    = get_active_user()
+    pc        = st.session_state.get("settings", {}).get("primary_color", VIOLET)
     photo_b64 = (active.get("extra_fields") or {}).get("_photo")
 
     pfc1, pfc2 = st.columns([1, 4])
     with pfc1:
         if photo_b64:
-            st.markdown(f'<img src="data:image/png;base64,{photo_b64}" style="width:90px;height:90px;border-radius:50%;object-fit:cover">', unsafe_allow_html=True)
+            st.markdown(f'<img src="data:image/png;base64,{photo_b64}" style="width:80px;height:80px;border-radius:50%;object-fit:cover">', unsafe_allow_html=True)
         else:
             ini = initials(active["name"])
-            st.markdown(f'<div style="width:90px;height:90px;border-radius:50%;background:{pc};display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;color:#fff">{ini}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="width:80px;height:80px;border-radius:50%;background:{pc};display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;color:#fff">{ini}</div>', unsafe_allow_html=True)
     with pfc2:
         st.markdown(f"### {active['name']}")
         st.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
         st.markdown(role_badge_html(active["role"]), unsafe_allow_html=True)
 
+    st.markdown("---")
     tab_ph, tab_pw = st.tabs(["📷 Photo", "🔑 Password"])
 
     with tab_ph:
-        photo_file = st.file_uploader("Upload profile photo (PNG/JPG)", type=["png","jpg","jpeg"], key="profile_photo_up")
-        pc1, pc2 = st.columns(2)
+        photo_file = st.file_uploader("Upload profile photo (PNG/JPG)", type=["png","jpg","jpeg"], key="prof_photo_up")
+        pp1, pp2 = st.columns(2)
         if photo_file:
-            if pc1.button("Save photo", type="primary", key="save_profile_photo"):
+            if pp1.button("Save photo", type="primary", key="prof_save_photo"):
                 new_b64 = img_to_b64(photo_file)
                 ef = dict(active.get("extra_fields") or {})
                 ef["_photo"] = new_b64
@@ -685,9 +682,9 @@ def render_profile():
                     if u["id"] == active["id"]:
                         st.session_state.users[i]["extra_fields"] = ef; break
                 sb_upsert_user({**active, "extra_fields": ef})
-                st.success("Profile photo updated."); st.rerun()
+                st.success("Photo updated."); st.rerun()
         if photo_b64:
-            if pc2.button("Remove photo", key="remove_profile_photo"):
+            if pp2.button("Remove photo", key="prof_remove_photo"):
                 ef = dict(active.get("extra_fields") or {})
                 ef.pop("_photo", None)
                 for i, u in enumerate(st.session_state.users):
@@ -697,7 +694,7 @@ def render_profile():
                 st.success("Photo removed."); st.rerun()
 
     with tab_pw:
-        with st.form("change_password_form"):
+        with st.form("prof_pw_form"):
             old_pw  = st.text_input("Current password",     type="password")
             new_pw  = st.text_input("New password",         type="password")
             conf_pw = st.text_input("Confirm new password", type="password")
@@ -723,11 +720,7 @@ def render_profile():
                         if u["id"] == active["id"]:
                             st.session_state.users[i]["password_hash"] = new_hash; break
                     sb_upsert_user({**active, "password_hash": new_hash})
-                    st.success("Password changed successfully.")
-
-    if st.button("Close", key="close_profile_btn"):
-        st.session_state["show_profile"] = False; st.rerun()
-    st.markdown("---")
+                    st.success("Password changed. You can close this window.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -1827,8 +1820,6 @@ def main():
     active  = get_active_user()
     is_rep  = active["role"] == "rep"
     render_sidebar()
-
-    render_profile()
 
     # View-as banner
     if st.session_state.get("view_as_user_id"):
