@@ -434,8 +434,10 @@ def new_id(): return str(uuid.uuid4())[:8]
 def read_upload(f) -> pd.DataFrame:
     """Parse an uploaded file (CSV, XLSX or XLS) into a DataFrame."""
     name = f.name.lower()
-    if name.endswith((".xlsx", ".xls")):
+    if name.endswith(".xlsx"):
         return pd.read_excel(f, engine="openpyxl")
+    if name.endswith(".xls"):
+        return pd.read_excel(f, engine="xlrd")
     return pd.read_csv(f)
 
 def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
