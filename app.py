@@ -52,15 +52,46 @@ VIOLET       = "#6C3FC5"
 VIOLET_LIGHT = "#EDE9FC"
 VIOLET_TEXT  = "#6C3FC5"
 
-ALL_PERMS = [
-    ("view",          "View accounts"),
-    ("log",           "Log calls"),
-    ("add_account",   "Add / Edit / Delete accounts"),
-    ("import",        "Import CSV"),
-    ("manage_users",  "Manage users"),
-    ("export",        "Export data"),
-    ("manage_schema", "Manage fields, roles & settings"),
-]
+PERM_MODULES = {
+    "Accounts": [
+        ("view",           "View accounts"),
+        ("acc_add",        "Add new accounts"),
+        ("acc_edit",       "Edit accounts (general)"),
+        ("acc_edit_name",  "Edit account name"),
+        ("acc_edit_brand", "Edit brand name"),
+        ("acc_edit_f5",    "Edit F5 number"),
+        ("acc_delete",     "Delete accounts"),
+        ("import",         "Import accounts (CSV)"),
+    ],
+    "Calls": [
+        ("log",            "Log interactions"),
+    ],
+    "Data": [
+        ("export",         "Export data"),
+    ],
+    "Users": [
+        ("manage_users",   "Manage users"),
+    ],
+    "Settings": [
+        ("manage_schema",  "Manage fields, roles & settings"),
+    ],
+}
+ALL_PERMS = [(pk, pl) for perms in PERM_MODULES.values() for pk, pl in perms]
+
+DEFAULT_BUTTON_LABELS = {
+    "log_call":    "Log call",
+    "add_account": "+ Account",
+    "import_csv":  "Import CSV",
+    "edit":        "Edit",
+    "delete":      "Delete",
+    "restore":     "Restore",
+    "save":        "Save",
+    "cancel":      "Cancel",
+    "add_user":    "+ Add user",
+    "export_csv":  "Export as CSV",
+    "sign_in":     "Sign in",
+    "logout":      "Logout",
+}
 TEAM_COLORS = [
     {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
     {"color":"#6C3FC5","bg":"#EDE9FC"},{"color":"#6C3FC5","bg":"#EDE9FC"},
@@ -149,7 +180,7 @@ def render_login_page():
         with st.form("login_form", clear_on_submit=False):
             email    = st.text_input("Email address", placeholder="you@company.com")
             password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+            submitted = st.form_submit_button(get_btn("sign_in"), type="primary", use_container_width=True)
         if submitted:
             if not email or not password:
                 st.error("Enter your email and password.")
@@ -197,6 +228,54 @@ def save_layout():
         sb.table("users").update({"extra_fields": json.dumps(ef)}).eq("id", admin["id"]).execute()
     except Exception as e:
         st.warning(f"Layout save failed: {e}")
+
+def get_btn(key: str) -> str:
+    """Return a potentially-customized button label, falling back to DEFAULT_BUTTON_LABELS."""
+    labels = st.session_state.get("settings", {}).get("button_labels", {})
+    return labels.get(key) or DEFAULT_BUTTON_LABELS.get(key, key)
+
+def apply_theme():
+    """Inject dynamic CSS overrides using the stored primary/light colors."""
+    s  = st.session_state.get("settings", {})
+    pc = s.get("primary_color", VIOLET)
+    lc = s.get("light_color",   VIOLET_LIGHT)
+    st.markdown(f"""
+    <style>
+      :root{{--pc:{pc};--lc:{lc}}}
+      .stButton>button[kind="primary"]{{background:{pc}!important;border-color:{pc}!important;color:#fff!important}}
+      .stButton>button[kind="primary"]:hover{{background:{pc}cc!important}}
+      .badge-ok,.badge-warn,.badge-info{{background:{lc}!important;color:{pc}!important}}
+      .badge-danger{{background:{pc}!important;color:#fff!important}}
+      .rep-banner{{background:{lc}!important;color:{pc}!important}}
+      .stTabs [data-baseweb="tab"][aria-selected="true"]{{color:{pc}!important;border-bottom-color:{pc}!important}}
+    </style>
+    """, unsafe_allow_html=True)
+
+def save_settings():
+    """Persist system settings to admin user's extra_fields._settings in Supabase."""
+    sb = get_supabase()
+    if not sb: return
+    admin = next((u for u in st.session_state.get("users", []) if u.get("role") == "admin"), None)
+    if not admin: return
+    ef = admin.get("extra_fields") or {}
+    if isinstance(ef, str):
+        try: ef = json.loads(ef)
+        except: ef = {}
+    s = st.session_state.get("settings", {})
+    ef["_settings"] = {
+        "system_name":   s.get("system_name", "Client Interaction Management"),
+        "primary_color": s.get("primary_color", VIOLET),
+        "light_color":   s.get("light_color",   VIOLET_LIGHT),
+        "button_labels": s.get("button_labels", dict(DEFAULT_BUTTON_LABELS)),
+    }
+    for i, u in enumerate(st.session_state.users):
+        if u["id"] == admin["id"]:
+            st.session_state.users[i]["extra_fields"] = ef
+            break
+    try:
+        sb.table("users").update({"extra_fields": json.dumps(ef)}).eq("id", admin["id"]).execute()
+    except Exception as e:
+        st.warning(f"Settings save failed: {e}")
 
 # ══ Supabase CRUD helpers ══════════════════════════════════════════════════════
 
@@ -371,7 +450,13 @@ def role_badge_html(role_id):
 
 def has_perm(role_id, perm):
     r = next((r for r in st.session_state.roles if r["id"]==role_id), None)
-    return perm in (r.get("perms") or set()) if r else False
+    if not r: return False
+    perms = r.get("perms") or set()
+    if perm in perms: return True
+    # Backward compat: legacy "add_account" covers all granular account write perms
+    if perm in ("acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete") and "add_account" in perms:
+        return True
+    return False
 
 def get_active_user():
     uid   = st.session_state.get("logged_in_user_id", "")
@@ -406,14 +491,19 @@ def init_state():
     if "initialized" in st.session_state: return
 
     st.session_state.settings = {
-        "system_name": "Client Interaction Management",
+        "system_name":    "Client Interaction Management",
         "system_logo_b64": None,
+        "primary_color":  VIOLET,
+        "light_color":    VIOLET_LIGHT,
+        "button_labels":  dict(DEFAULT_BUTTON_LABELS),
     }
+    _all_acc = {"view","log","acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete","import","manage_users","export","manage_schema"}
+    _mgr_acc = {"view","log","acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete","import","export"}
     st.session_state.roles = [
-        {"id":"admin",  "label":"Admin",   "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log","add_account","import","manage_users","export","manage_schema"}},
-        {"id":"manager","label":"Manager", "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log","add_account","import","export"}},
-        {"id":"rep",    "label":"Rep",     "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view","log"}},
-        {"id":"viewer", "label":"Viewer",  "color":"#6C3FC5","bg":"#EDE9FC","perms":{"view"}},
+        {"id":"admin",  "label":"Admin",   "color":VIOLET,"bg":VIOLET_LIGHT,"perms":_all_acc},
+        {"id":"manager","label":"Manager", "color":VIOLET,"bg":VIOLET_LIGHT,"perms":_mgr_acc},
+        {"id":"rep",    "label":"Rep",     "color":VIOLET,"bg":VIOLET_LIGHT,"perms":{"view","log"}},
+        {"id":"viewer", "label":"Viewer",  "color":VIOLET,"bg":VIOLET_LIGHT,"perms":{"view"}},
     ]
     st.session_state.call_statuses = [
         {"id":"cs1","label":"Completed",         "color":"#6C3FC5"},
@@ -451,6 +541,10 @@ def init_state():
             st.session_state.account_sections = layout["sections"]
         if layout.get("account_extra_fields"):
             st.session_state.account_extra_fields = layout["account_extra_fields"]
+        saved_settings = ef.get("_settings", {})
+        if saved_settings:
+            for k, v in saved_settings.items():
+                st.session_state.settings[k] = v
 
     st.session_state.users    = users
     st.session_state.accounts = accounts
@@ -476,9 +570,26 @@ def render_sidebar():
     users    = st.session_state.get("users", [])
     accounts = st.session_state.get("accounts", [])
 
-    st.sidebar.markdown(role_badge_html(active["role"]) + " &nbsp; **" + active["name"] + "**", unsafe_allow_html=True)
-    st.sidebar.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
-    if st.sidebar.button("🚪 Logout", use_container_width=True, key="logout_btn"):
+    photo_b64 = (active.get("extra_fields") or {}).get("_photo")
+    pc = st.session_state.get("settings", {}).get("primary_color", VIOLET)
+    if photo_b64:
+        avatar_html = f'<img src="data:image/png;base64,{photo_b64}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0">'
+    else:
+        ini = initials(active["name"])
+        avatar_html = f'<div style="width:40px;height:40px;border-radius:50%;background:{pc};display:inline-flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:15px;flex-shrink:0">{ini}</div>'
+    st.sidebar.markdown(
+        f'<div style="display:flex;align-items:center;gap:10px">{avatar_html}'
+        f'<div style="overflow:hidden"><div>{role_badge_html(active["role"])}</div>'
+        f'<strong style="font-size:13px">{active["name"]}</strong><br>'
+        f'<small style="color:#888">{active["email"]}</small></div></div>',
+        unsafe_allow_html=True
+    )
+    st.sidebar.markdown("")
+    sb_col1, sb_col2 = st.sidebar.columns(2)
+    if sb_col1.button("👤 Profile", use_container_width=True, key="profile_btn"):
+        st.session_state["show_profile"] = not st.session_state.get("show_profile", False)
+        st.rerun()
+    if sb_col2.button("🚪 " + get_btn("logout"), use_container_width=True, key="logout_btn"):
         logout()
 
     st.sidebar.markdown("---")
@@ -486,6 +597,88 @@ def render_sidebar():
     st.sidebar.metric("Accounts", len(accounts))
     st.sidebar.metric("Overdue >14d", overdue)
     st.sidebar.metric("Team", len(users))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROFILE
+# ══════════════════════════════════════════════════════════════════════════════
+def render_profile():
+    if not st.session_state.get("show_profile"): return
+    active = get_active_user()
+    st.markdown("---")
+
+    pc = st.session_state.get("settings", {}).get("primary_color", VIOLET)
+    lc = st.session_state.get("settings", {}).get("light_color",   VIOLET_LIGHT)
+    photo_b64 = (active.get("extra_fields") or {}).get("_photo")
+
+    pfc1, pfc2 = st.columns([1, 4])
+    with pfc1:
+        if photo_b64:
+            st.markdown(f'<img src="data:image/png;base64,{photo_b64}" style="width:90px;height:90px;border-radius:50%;object-fit:cover">', unsafe_allow_html=True)
+        else:
+            ini = initials(active["name"])
+            st.markdown(f'<div style="width:90px;height:90px;border-radius:50%;background:{pc};display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;color:#fff">{ini}</div>', unsafe_allow_html=True)
+    with pfc2:
+        st.markdown(f"### {active['name']}")
+        st.markdown(f'<small style="color:#888">{active["email"]}</small>', unsafe_allow_html=True)
+        st.markdown(role_badge_html(active["role"]), unsafe_allow_html=True)
+
+    tab_ph, tab_pw = st.tabs(["📷 Photo", "🔑 Password"])
+
+    with tab_ph:
+        photo_file = st.file_uploader("Upload profile photo (PNG/JPG)", type=["png","jpg","jpeg"], key="profile_photo_up")
+        pc1, pc2 = st.columns(2)
+        if photo_file:
+            if pc1.button("Save photo", type="primary", key="save_profile_photo"):
+                new_b64 = img_to_b64(photo_file)
+                ef = dict(active.get("extra_fields") or {})
+                ef["_photo"] = new_b64
+                for i, u in enumerate(st.session_state.users):
+                    if u["id"] == active["id"]:
+                        st.session_state.users[i]["extra_fields"] = ef; break
+                sb_upsert_user({**active, "extra_fields": ef})
+                st.success("Profile photo updated."); st.rerun()
+        if photo_b64:
+            if pc2.button("Remove photo", key="remove_profile_photo"):
+                ef = dict(active.get("extra_fields") or {})
+                ef.pop("_photo", None)
+                for i, u in enumerate(st.session_state.users):
+                    if u["id"] == active["id"]:
+                        st.session_state.users[i]["extra_fields"] = ef; break
+                sb_upsert_user({**active, "extra_fields": ef})
+                st.success("Photo removed."); st.rerun()
+
+    with tab_pw:
+        with st.form("change_password_form"):
+            old_pw  = st.text_input("Current password",     type="password")
+            new_pw  = st.text_input("New password",         type="password")
+            conf_pw = st.text_input("Confirm new password", type="password")
+            do_change = st.form_submit_button("Change password", type="primary")
+        if do_change:
+            if not old_pw or not new_pw or not conf_pw:
+                st.error("Fill in all password fields.")
+            elif new_pw != conf_pw:
+                st.error("New passwords don't match.")
+            elif len(new_pw) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                ef = active.get("extra_fields") or {}
+                if isinstance(ef, str):
+                    try: ef = json.loads(ef)
+                    except: ef = {}
+                pw_hash = active.get("password_hash") or ef.get("_pw", "")
+                if not pw_hash or not bcrypt.checkpw(old_pw.encode(), pw_hash.encode()):
+                    st.error("Current password is incorrect.")
+                else:
+                    new_hash = hash_password(new_pw)
+                    for i, u in enumerate(st.session_state.users):
+                        if u["id"] == active["id"]:
+                            st.session_state.users[i]["password_hash"] = new_hash; break
+                    sb_upsert_user({**active, "password_hash": new_hash})
+                    st.success("Password changed successfully.")
+
+    if st.button("Close", key="close_profile_btn"):
+        st.session_state["show_profile"] = False; st.rerun()
+    st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -584,7 +777,10 @@ def _render_chart(logs, is_rep, active):
 # ACCOUNTS — FILTERS + BULK DELETE + SUPABASE
 # ══════════════════════════════════════════════════════════════════════════════
 def render_accounts(active, is_rep):
-    is_admin = has_perm(active["role"], "add_account")
+    can_add    = has_perm(active["role"], "acc_add")
+    can_edit   = has_perm(active["role"], "acc_edit")
+    can_delete = has_perm(active["role"], "acc_delete")
+    is_admin   = can_add or can_edit or can_delete
     st.subheader("My accounts" if is_rep else "All accounts")
 
     # ── Column visibility ──────────────────────────────────────────────────────
@@ -795,12 +991,13 @@ def render_accounts(active, is_rep):
 
             btn_c = st.columns(5)
             if has_perm(active["role"],"log"):
-                if btn_c[0].button("📞 Log call", key=f"log_{acc['id']}"):
+                if btn_c[0].button("📞 " + get_btn("log_call"), key=f"log_{acc['id']}"):
                     st.session_state.log_target=acc["id"]; st.session_state.show_log_modal=True; st.rerun()
-            if is_admin:
-                if btn_c[1].button("✏️ Edit", key=f"edit_{acc['id']}"):
+            if can_edit:
+                if btn_c[1].button("✏️ " + get_btn("edit"), key=f"edit_{acc['id']}"):
                     st.session_state.editing_account=acc["id"]; st.rerun()
-                if btn_c[2].button("🗑️ Delete", key=f"del_{acc['id']}"):
+            if can_delete:
+                if btn_c[2].button("🗑️ " + get_btn("delete"), key=f"del_{acc['id']}"):
                     st.session_state.accounts = [a for a in st.session_state.accounts if a["id"]!=acc["id"]]
                     sb_soft_delete_account(acc["id"], active["id"], active["name"])
                     st.success(f"'{acc['brand_name']}' deleted."); st.rerun()
@@ -813,19 +1010,24 @@ def _render_edit_account():
     acc_id = st.session_state.editing_account
     acc = next((a for a in st.session_state.accounts if a["id"]==acc_id), None)
     if not acc: del st.session_state["editing_account"]; return
+    active = get_active_user()
+    can_name  = has_perm(active["role"], "acc_edit_name")  or has_perm(active["role"], "acc_edit")
+    can_brand = has_perm(active["role"], "acc_edit_brand") or has_perm(active["role"], "acc_edit")
+    can_f5    = has_perm(active["role"], "acc_edit_f5")    or has_perm(active["role"], "acc_edit")
+    can_gen   = has_perm(active["role"], "acc_edit")
     st.markdown("---"); st.subheader(f"Edit — {acc['brand_name']}")
     with st.form(f"edit_acc_{acc_id}"):
         c1,c2 = st.columns(2)
-        new_name    = c1.text_input("Account name", value=acc["account_name"])
-        new_brand   = c2.text_input("Brand name",   value=acc["brand_name"])
+        new_name    = c1.text_input("Account name", value=acc["account_name"],  disabled=not can_name)
+        new_brand   = c2.text_input("Brand name",   value=acc["brand_name"],    disabled=not can_brand)
         c3,c4 = st.columns(2)
-        new_branches = c3.number_input("# of branches", min_value=1, value=int(acc["branches"]))
+        new_branches = c3.number_input("# of branches", min_value=1, value=int(acc["branches"]), disabled=not can_gen)
         sect_idx = SECTORS.index(acc["sector"]) if acc["sector"] in SECTORS else 0
-        new_sector   = c4.selectbox("Sector", SECTORS, index=sect_idx)
+        new_sector   = c4.selectbox("Sector", SECTORS, index=sect_idx, disabled=not can_gen)
         c5,c6 = st.columns(2)
-        new_contact  = c5.text_input("Contact person", value=acc.get("contact_person",""))
+        new_contact  = c5.text_input("Contact person", value=acc.get("contact_person",""), disabled=not can_gen)
         cur_f5 = acc.get("extra_fields",{}).get("f5_number","")
-        new_f5 = c6.text_input("F5 Number", value=cur_f5, placeholder="6-digit number", max_chars=6, key=f"f5_{acc_id}")
+        new_f5 = c6.text_input("F5 Number", value=cur_f5, placeholder="6-digit number", max_chars=6, key=f"f5_{acc_id}", disabled=not can_f5)
         new_logo_f   = st.file_uploader("Brand logo (PNG/JPG)", type=["png","jpg","jpeg"], key=f"logo_up_{acc_id}")
         ef_vals = {}
         for f in st.session_state.account_extra_fields:
@@ -874,8 +1076,8 @@ def render_deleted_accounts(active):
         c2.markdown(f"Deleted by: **{d.get('deleted_by_name','?')}**")
         ts = d.get("deleted_at","")
         c3.markdown(f"<small style='color:#888'>{ts[:19] if ts else '—'}</small>", unsafe_allow_html=True)
-        if has_perm(active["role"],"add_account"):
-            if c4.button("↩ Restore", key=f"restore_{d.get('id')}"):
+        if has_perm(active["role"],"acc_add") or has_perm(active["role"],"acc_edit"):
+            if c4.button("↩ " + get_btn("restore"), key=f"restore_{d.get('id')}"):
                 sb_restore_account(d["account_id"])
                 # also reload into local state
                 if sb_available():
@@ -920,7 +1122,7 @@ def render_log(active, is_rep):
     df=pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
     if has_perm(active["role"],"export"):
-        st.download_button("Export as CSV", df.to_csv(index=False).encode(), "activity_log.csv","text/csv")
+        st.download_button(get_btn("export_csv"), df.to_csv(index=False).encode(), "activity_log.csv","text/csv")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # USERS
@@ -967,7 +1169,7 @@ def render_users(active):
                 st.session_state.users=[x for x in st.session_state.users if x["id"]!=u["id"]]
                 sb_delete_user(u["id"]); st.rerun()
         st.divider()
-    if is_admin and st.button("+ Add user", type="primary", key="add_user_btn"):
+    if is_admin and st.button(get_btn("add_user"), type="primary", key="add_user_btn"):
         st.session_state.editing_user="__new__"; st.rerun()
     if st.session_state.get("editing_user"):
         eid=st.session_state.editing_user
@@ -1014,7 +1216,7 @@ def render_users(active):
 # FIELD BUILDER + ROLES + SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 def render_schema():
-    t1,t2,t3,t4,t5=st.tabs(["Custom Fields","Account Layout","Call Statuses","Role Manager","System Settings"])
+    t1,t2,t3,t4,t5=st.tabs(["Custom Fields","Account Layout","Call Statuses","Role Manager","Appearance"])
     with t1:
         st.subheader("Custom fields")
         all_fields=([(f,"Account") for f in st.session_state.account_extra_fields]+[(f,"User") for f in st.session_state.user_extra_fields]+[(f,"Call") for f in st.session_state.call_extra_fields])
@@ -1172,8 +1374,13 @@ def render_schema():
                 b_e,b_d=c2.columns(2)
                 if b_e.button("Edit",key=f"er_{role['id']}"): st.session_state.editing_role=role["id"]; st.rerun()
                 if role["id"] not in PROTECTED and b_d.button("Del",key=f"dr_{role['id']}"): st.session_state.roles=[r for r in st.session_state.roles if r["id"]!=role["id"]]; st.rerun()
-                perms=role.get("perms") or set(); pc=st.columns(2)
-                for i,(pk,pl) in enumerate(ALL_PERMS): pc[i%2].markdown(("✅" if pk in perms else "⬜")+" "+pl)
+                perms = role.get("perms") or set()
+                for mod_name, mod_perms in PERM_MODULES.items():
+                    st.markdown(f"<small style='color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.05em'>{mod_name}</small>", unsafe_allow_html=True)
+                    pm_cols = st.columns(2)
+                    for i, (pk, pl) in enumerate(mod_perms):
+                        has = pk in perms or ("add_account" in perms and pk in ("acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete"))
+                        pm_cols[i%2].markdown(("✅" if has else "⬜") + " " + pl)
         if st.button("+ New role",type="primary",key="add_role_btn"): st.session_state.editing_role="__new__"; st.rerun()
         if st.session_state.get("editing_role"):
             eid=st.session_state.editing_role; er=next((r for r in st.session_state.roles if r["id"]==eid),None) if eid!="__new__" else None
@@ -1183,9 +1390,15 @@ def render_schema():
                 else: r_id=er["id"]; st.text_input("Role ID (protected)",value=r_id,disabled=True)
                 r_lbl=st.text_input("Display label",value=er["label"] if er else "")
                 rc1,rc2=st.columns(2); r_color=rc1.color_picker("Text color",value=er.get("color",VIOLET) if er else VIOLET); r_bg=rc2.color_picker("Badge background",value=er.get("bg",VIOLET_LIGHT) if er else VIOLET_LIGHT)
-                st.markdown("**Permissions:**"); new_perms=set(); cur_perms=er.get("perms") or set() if er else set(); pc2=st.columns(2)
-                for i,(pk,pl) in enumerate(ALL_PERMS):
-                    if pc2[i%2].checkbox(pl,value=pk in cur_perms,key=f"rp_{eid}_{pk}"): new_perms.add(pk)
+                cur_perms = er.get("perms") or set() if er else set()
+                new_perms = set()
+                for mod_name, mod_perms in PERM_MODULES.items():
+                    st.markdown(f"**{mod_name}**")
+                    mod_cols = st.columns(2)
+                    for i, (pk, pl) in enumerate(mod_perms):
+                        default_val = pk in cur_perms or ("add_account" in cur_perms and pk in ("acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete"))
+                        if mod_cols[i%2].checkbox(pl, value=default_val, key=f"rp_{eid}_{pk}"):
+                            new_perms.add(pk)
                 sv,ca=st.columns(2); do_save=sv.form_submit_button("Save role",type="primary"); do_cancel=ca.form_submit_button("Cancel")
             if do_save and r_id and r_lbl:
                 rid2=r_id.strip().lower().replace(" ","_"); new_role={"id":rid2,"label":r_lbl,"color":r_color,"bg":r_bg,"perms":new_perms}
@@ -1198,17 +1411,71 @@ def render_schema():
                 if "editing_role" in st.session_state: del st.session_state["editing_role"]
                 st.rerun()
         st.markdown("---"); st.subheader("Permissions matrix")
-        mat={pl:{r["label"]:("✓" if pk in (r.get("perms") or set()) else "✕") for r in st.session_state.roles} for pk,pl in ALL_PERMS}
+        mat={pl:{r["label"]:("✓" if (pk in (r.get("perms") or set()) or ("add_account" in (r.get("perms") or set()) and pk in ("acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete"))) else "✕") for r in st.session_state.roles} for pk,pl in ALL_PERMS}
         st.dataframe(pd.DataFrame(mat).T, use_container_width=True)
     with t5:
-        st.subheader("System settings"); s=st.session_state.settings
+        st.subheader("Appearance")
+        s = st.session_state.settings
+
+        # ── System identity ──────────────────────────────────────────────────
+        st.markdown("#### System Identity")
         with st.form("sys_settings"):
-            new_name=st.text_input("System name",value=s.get("system_name","CIMS"))
-            logo_file=st.file_uploader("System logo (PNG/JPG)",type=["png","jpg","jpeg"],key="sys_logo_up")
-            if s.get("system_logo_b64"): st.markdown("**Current logo:**"); st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"),unsafe_allow_html=True)
-            ca,cb,cc=st.columns(3); do_save=ca.form_submit_button("Save",type="primary"); do_clear=cb.form_submit_button("Remove logo"); do_cancel=cc.form_submit_button("Cancel")
-        if do_save: s["system_name"]=new_name; s["system_logo_b64"]=img_to_b64(logo_file) if logo_file else s.get("system_logo_b64"); st.success("Settings saved."); st.rerun()
-        if do_clear: s["system_logo_b64"]=None; st.success("Logo removed."); st.rerun()
+            new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
+            logo_file = st.file_uploader("System logo (PNG/JPG)", type=["png","jpg","jpeg"], key="sys_logo_up")
+            if s.get("system_logo_b64"):
+                st.markdown("**Current logo:**")
+                st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
+            ia,ib,ic = st.columns(3)
+            do_save_id  = ia.form_submit_button("Save", type="primary")
+            do_clear_id = ib.form_submit_button("Remove logo")
+        if do_save_id:
+            s["system_name"]    = new_name
+            s["system_logo_b64"] = img_to_b64(logo_file) if logo_file else s.get("system_logo_b64")
+            save_settings(); st.success("Identity saved."); st.rerun()
+        if do_clear_id:
+            s["system_logo_b64"] = None
+            save_settings(); st.success("Logo removed."); st.rerun()
+
+        # ── Colors ────────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Colors")
+        st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
+        with st.form("color_settings"):
+            cc1, cc2 = st.columns(2)
+            new_pc = cc1.color_picker("Primary color",       value=s.get("primary_color", VIOLET))
+            new_lc = cc2.color_picker("Accent / light color", value=s.get("light_color",   VIOLET_LIGHT))
+            ca1, ca2 = st.columns(2)
+            do_save_color  = ca1.form_submit_button("Apply colors", type="primary")
+            do_reset_color = ca2.form_submit_button("Reset to defaults")
+        if do_save_color:
+            s["primary_color"] = new_pc; s["light_color"] = new_lc
+            save_settings(); st.success("Colors updated — refresh the page to see the full effect."); st.rerun()
+        if do_reset_color:
+            s["primary_color"] = VIOLET; s["light_color"] = VIOLET_LIGHT
+            save_settings(); st.success("Colors reset."); st.rerun()
+
+        # ── Button labels ─────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Button Labels")
+        st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
+        labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
+        with st.form("button_labels_form"):
+            new_labels = {}
+            bl_cols = st.columns(2)
+            for i, (key, default) in enumerate(DEFAULT_BUTTON_LABELS.items()):
+                cur = labels.get(key, default)
+                new_labels[key] = bl_cols[i%2].text_input(
+                    default, value=cur, key=f"bl_{key}", placeholder=default
+                )
+            bl1, bl2 = st.columns(2)
+            do_save_labels  = bl1.form_submit_button("Save labels", type="primary")
+            do_reset_labels = bl2.form_submit_button("Reset to defaults")
+        if do_save_labels:
+            s["button_labels"] = {k: v.strip() or DEFAULT_BUTTON_LABELS[k] for k, v in new_labels.items()}
+            save_settings(); st.success("Button labels saved."); st.rerun()
+        if do_reset_labels:
+            s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
+            save_settings(); st.success("Labels reset."); st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LOG CALL MODAL
@@ -1331,18 +1598,21 @@ def main():
         st.stop()
 
     init_state()
+    apply_theme()
     active  = get_active_user()
     is_rep  = active["role"] == "rep"
     render_sidebar()
+
+    render_profile()
 
     s  = st.session_state.settings
     tc = st.columns([4,1,1])
     tc[0].title(s.get("system_name","Client Interaction Management"))
     with tc[1]:
-        if has_perm(active["role"],"import") and st.button("Import CSV",use_container_width=True,key="top_import"):
+        if has_perm(active["role"],"import") and st.button(get_btn("import_csv"),use_container_width=True,key="top_import"):
             st.session_state.show_import=True; st.session_state.show_add_account=False; st.session_state.show_log_modal=False
     with tc[2]:
-        if has_perm(active["role"],"add_account") and st.button("+ Account",type="primary",use_container_width=True,key="top_add"):
+        if has_perm(active["role"],"acc_add") and st.button(get_btn("add_account"),type="primary",use_container_width=True,key="top_add"):
             st.session_state.show_add_account=True; st.session_state.show_import=False; st.session_state.show_log_modal=False
 
     render_add_account(active)
