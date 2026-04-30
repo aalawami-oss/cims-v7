@@ -427,7 +427,21 @@ def sb_upsert_call_log(account_id: str, note: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+import io as _io
+
 def new_id(): return str(uuid.uuid4())[:8]
+
+def read_upload(f) -> pd.DataFrame:
+    """Parse an uploaded file (CSV, XLSX or XLS) into a DataFrame."""
+    name = f.name.lower()
+    if name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(f, engine="openpyxl")
+    return pd.read_csv(f)
+
+def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buf = _io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
 def days_since(d):
     if not d: return 999
     try:
@@ -1131,14 +1145,16 @@ def render_users(active):
     is_admin = has_perm(active["role"],"manage_users")
     st.subheader("User management" if is_admin else "Team members")
     if is_admin:
-        with st.expander("📥 Bulk import users via CSV", expanded=False):
+        with st.expander("📥 Bulk import users via CSV or Excel", expanded=False):
             role_ids=[r["id"] for r in st.session_state.roles]
             tmpl=pd.DataFrame(columns=["Name","Email","Role ("+"/".join(role_ids)+")"])
-            st.download_button("Download template", tmpl.to_csv(index=False).encode(), "users_template.csv","text/csv",key="ul_tmpl")
-            up=st.file_uploader("Upload CSV", type=["csv"], key="bulk_user_up")
+            ud1,ud2=st.columns(2)
+            ud1.download_button("⬇ CSV template",   tmpl.to_csv(index=False).encode(), "users_template.csv",  "text/csv",                                                           key="ul_tmpl_csv")
+            ud2.download_button("⬇ Excel template", df_to_excel_bytes(tmpl),           "users_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ul_tmpl_xl")
+            up=st.file_uploader("Upload file (CSV, XLSX or XLS)", type=["csv","xlsx","xls"], key="bulk_user_up")
             if up:
                 try:
-                    df=pd.read_csv(up); df.columns=[c.strip() for c in df.columns]
+                    df=read_upload(up); df.columns=[c.strip() for c in df.columns]
                     st.caption(f"{len(df)} rows"); st.dataframe(df.head(), use_container_width=True)
                     mode=st.radio("Mode",["Add new","Update existing by email"],horizontal=True,key="bulk_u_mode")
                     if st.button("Import users", type="primary", key="do_bulk_users"):
@@ -1219,25 +1235,74 @@ def render_schema():
     t1,t2,t3,t4,t5=st.tabs(["Custom Fields","Account Layout","Call Statuses","Role Manager","Appearance"])
     with t1:
         st.subheader("Custom fields")
+        FIELD_TYPES = ["text","number","date","select"]
         all_fields=([(f,"Account") for f in st.session_state.account_extra_fields]+[(f,"User") for f in st.session_state.user_extra_fields]+[(f,"Call") for f in st.session_state.call_extra_fields])
         if not all_fields: st.caption("No custom fields yet.")
         for f,ent in all_fields:
-            c1,c2,c3,c4,c5=st.columns([2,1,1,2,1]); c1.markdown(f"**{f['label']}**"); c2.markdown(f"`{f['type']}`"); c3.markdown(f'<span class="badge-info">{ent}</span>',unsafe_allow_html=True); c4.markdown(", ".join((f.get("options") or [])[:4]) or "—")
-            if c5.button("Remove",key=f"df_{f['id']}"):
-                if ent=="Account": st.session_state.account_extra_fields=[x for x in st.session_state.account_extra_fields if x["id"]!=f["id"]]
-                elif ent=="User": st.session_state.user_extra_fields=[x for x in st.session_state.user_extra_fields if x["id"]!=f["id"]]
-                else: st.session_state.call_extra_fields=[x for x in st.session_state.call_extra_fields if x["id"]!=f["id"]]
+            c1,c2,c3,c4,c5,c6=st.columns([2,1,1,2,1,1])
+            c1.markdown(f"**{f['label']}**")
+            c2.markdown(f"`{f['type']}`")
+            c3.markdown(f'<span class="badge-info">{ent}</span>', unsafe_allow_html=True)
+            c4.markdown(", ".join((f.get("options") or [])[:5]) or "—")
+            if c5.button("Edit", key=f"ef_edit_{f['id']}"):
+                st.session_state["editing_field"]        = f["id"]
+                st.session_state["editing_field_entity"] = ent
                 st.rerun()
+            if c6.button("Remove", key=f"df_{f['id']}"):
+                if ent=="Account": st.session_state.account_extra_fields=[x for x in st.session_state.account_extra_fields if x["id"]!=f["id"]]
+                elif ent=="User":  st.session_state.user_extra_fields=[x for x in st.session_state.user_extra_fields if x["id"]!=f["id"]]
+                else:              st.session_state.call_extra_fields=[x for x in st.session_state.call_extra_fields if x["id"]!=f["id"]]
+                if st.session_state.get("editing_field") == f["id"]:
+                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
+                if ent == "Account": save_layout()
+                st.rerun()
+
+            # Inline edit form for this field
+            if st.session_state.get("editing_field") == f["id"]:
+                with st.container():
+                    st.markdown(f"<div style='background:#f9f7ff;border-left:3px solid {VIOLET};padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:8px'>", unsafe_allow_html=True)
+                    with st.form(f"edit_field_{f['id']}"):
+                        ef1,ef2 = st.columns(2)
+                        new_lbl  = ef1.text_input("Label", value=f["label"])
+                        type_idx = FIELD_TYPES.index(f.get("type","text")) if f.get("type","text") in FIELD_TYPES else 0
+                        new_type = ef2.selectbox("Type", FIELD_TYPES, index=type_idx)
+                        cur_opts = ", ".join(f.get("options") or [])
+                        new_opts_str = st.text_input(
+                            "Options (comma-separated — only used for 'select' type)",
+                            value=cur_opts,
+                            placeholder="e.g. High, Medium, Low"
+                        )
+                        es1, es2 = st.columns(2)
+                        do_ef_save   = es1.form_submit_button("Save changes", type="primary")
+                        do_ef_cancel = es2.form_submit_button("Cancel")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                if do_ef_save and new_lbl.strip():
+                    new_opts = [o.strip() for o in new_opts_str.split(",") if o.strip()] if new_type == "select" else []
+                    target = (
+                        st.session_state.account_extra_fields if ent=="Account" else
+                        st.session_state.user_extra_fields    if ent=="User"    else
+                        st.session_state.call_extra_fields
+                    )
+                    for i, fld in enumerate(target):
+                        if fld["id"] == f["id"]:
+                            target[i] = {**fld, "label": new_lbl.strip(), "type": new_type, "options": new_opts}
+                            break
+                    if ent == "Account": save_layout()
+                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
+                    st.rerun()
+                if do_ef_cancel:
+                    st.session_state.pop("editing_field", None); st.session_state.pop("editing_field_entity", None)
+                    st.rerun()
+
         st.markdown("---"); st.markdown("**Add field**")
         with st.form("add_field"):
-            fc1,fc2,fc3=st.columns(3); lbl=fc1.text_input("Label"); ftype=fc2.selectbox("Type",["text","number","date","select"]); fent=fc3.selectbox("Applies to",["Account","User","Call"])
-            opts_str=""
-            if ftype=="select": opts_str=st.text_input("Options (comma-separated)")
+            fc1,fc2,fc3=st.columns(3); lbl=fc1.text_input("Label"); ftype=fc2.selectbox("Type",FIELD_TYPES); fent=fc3.selectbox("Applies to",["Account","User","Call"])
+            opts_str=st.text_input("Options (comma-separated — only for 'select' type)", placeholder="e.g. High, Medium, Low")
             if st.form_submit_button("Add field",type="primary") and lbl:
-                nf={"id":"f"+new_id(),"label":lbl,"type":ftype,"options":[o.strip() for o in opts_str.split(",") if o.strip()]}
-                if fent=="Account": st.session_state.account_extra_fields.append(nf)
-                elif fent=="User": st.session_state.user_extra_fields.append(nf)
-                else: st.session_state.call_extra_fields.append(nf)
+                nf={"id":"f"+new_id(),"label":lbl,"type":ftype,"options":[o.strip() for o in opts_str.split(",") if o.strip()], "sort_order":99, "section_id":None}
+                if fent=="Account": st.session_state.account_extra_fields.append(nf); save_layout()
+                elif fent=="User":  st.session_state.user_extra_fields.append(nf)
+                else:               st.session_state.call_extra_fields.append(nf)
                 st.rerun()
     with t2:
         st.subheader("Account Layout")
@@ -1541,16 +1606,18 @@ def render_add_account(active):
 # ══════════════════════════════════════════════════════════════════════════════
 def render_import():
     if not st.session_state.get("show_import"): return
-    st.markdown("---"); st.subheader("Import accounts — CSV")
+    st.markdown("---"); st.subheader("Import accounts — CSV or Excel")
     cols=["Account ID","Account Name","Brand Name","# of Branches","Sector","Contact Person","F5 Number"]+[f["label"] for f in st.session_state.account_extra_fields]
     tmpl=pd.DataFrame(columns=cols)
-    st.download_button("Download CSV template", tmpl.to_csv(index=False).encode(), "accounts_template.csv","text/csv",key="dl_acc_tmpl")
+    dl1,dl2=st.columns(2)
+    dl1.download_button("⬇ CSV template",  tmpl.to_csv(index=False).encode(),       "accounts_template.csv",  "text/csv",                                                                    key="dl_acc_tmpl_csv")
+    dl2.download_button("⬇ Excel template", df_to_excel_bytes(tmpl),                 "accounts_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",          key="dl_acc_tmpl_xl")
     mode=st.radio("Import mode",["Add new rows","Update existing by Account ID","Add new + update existing"],horizontal=True,key="import_mode")
-    uploaded=st.file_uploader("Upload CSV",type=["csv"],key="acc_csv_upload")
+    uploaded=st.file_uploader("Upload file (CSV, XLSX or XLS)", type=["csv","xlsx","xls"], key="acc_csv_upload")
     if uploaded is not None:
         try:
-            df=pd.read_csv(uploaded); df.columns=[c.strip() for c in df.columns]
-            st.caption(f"{len(df)} rows · Columns: {', '.join(df.columns)}")
+            df=read_upload(uploaded); df.columns=[c.strip() for c in df.columns]
+            st.caption(f"{len(df)} rows · {uploaded.name}")
             st.dataframe(df.head(6), use_container_width=True)
             if st.button("Confirm import", type="primary", key="confirm_import"):
                 added=updated=skipped=0; bulk_new=[]; bulk_update=[]
@@ -1577,12 +1644,11 @@ def render_import():
                     elif not existing:
                         st.session_state.accounts.append(new_acc); bulk_new.append(new_acc); added+=1
                     else: skipped+=1
-                # Write to Supabase in bulk
                 all_to_write = bulk_new + bulk_update
                 if all_to_write: sb_upsert_accounts_bulk(all_to_write)
                 st.session_state.show_import=False
                 st.success(f"Import complete — {added} added · {updated} updated · {skipped} skipped"); st.rerun()
-        except Exception as ex: st.error(f"CSV error: {ex}")
+        except Exception as ex: st.error(f"Import error: {ex}")
     if st.button("Close",key="close_import"): st.session_state.show_import=False; st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
