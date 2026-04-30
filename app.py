@@ -109,28 +109,26 @@ def sb_available():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def verify_login(email: str, password: str):
-    """Return user dict if credentials are valid, else None."""
+    """Return user dict if credentials are valid, else None. Raises on unexpected errors."""
     sb = get_supabase()
     if not sb:
+        raise RuntimeError("Supabase not connected.")
+    # Fetch all users and match email case-insensitively in Python
+    # (avoids supabase-py version differences with ilike)
+    rows = sb.table("users").select("*").execute().data or []
+    user = next((u for u in rows if (u.get("email") or "").lower() == email.strip().lower()), None)
+    if not user:
         return None
-    try:
-        rows = sb.table("users").select("*").ilike("email", email.strip()).execute().data
-        if not rows:
-            return None
-        user = rows[0]
-        # Support password hash in dedicated column OR inside extra_fields JSONB
-        ef = user.get("extra_fields") or {}
-        if isinstance(ef, str):
-            try: ef = json.loads(ef)
-            except: ef = {}
-        pw_hash = user.get("password_hash") or ef.get("_pw", "")
-        if not pw_hash:
-            return None
-        if bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
-            return user
-        return None
-    except Exception:
-        return None
+    ef = user.get("extra_fields") or {}
+    if isinstance(ef, str):
+        try: ef = json.loads(ef)
+        except: ef = {}
+    pw_hash = user.get("password_hash") or ef.get("_pw", "")
+    if not pw_hash:
+        raise RuntimeError(f"No password set for this account. Contact your admin.")
+    if bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
+        return user
+    return None
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
@@ -156,13 +154,18 @@ def render_login_page():
             if not email or not password:
                 st.error("Enter your email and password.")
             else:
-                user = verify_login(email, password)
-                if user:
-                    st.session_state.logged_in_user_id = user["id"]
-                    st.session_state.pop("initialized", None)
-                    st.rerun()
-                else:
-                    st.error("Invalid email or password.")
+                try:
+                    user = verify_login(email, password)
+                    if user:
+                        st.session_state.logged_in_user_id = user["id"]
+                        st.session_state.pop("initialized", None)
+                        st.rerun()
+                    else:
+                        st.error("Invalid email or password.")
+                except RuntimeError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Login error: {type(e).__name__}: {e}")
 
 def logout():
     for key in list(st.session_state.keys()):
