@@ -101,7 +101,8 @@ TEAM_COLORS = [
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
 CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","Account Owner","F5 Number"]
-SECTION_AFFECT_OPTIONS = ["Accounts", "Calls", "Users"]
+SECTION_AFFECT_OPTIONS  = ["Accounts", "Calls", "Users"]
+CARD_FIELD_ORDER_DEFAULT = ["ID","Account Name","Brand Name","Branches","Sector","Contact","Account Owner","Last Call","F5 Number"]
 
 # Ordered list of main-nav tabs.  key=internal id, label=display name, removable=can admin hide it
 TAB_DEFS = [
@@ -1005,6 +1006,15 @@ def render_accounts(active, is_rep):
     vis = st.session_state.get("visible_columns", list(CORE_COLUMNS))
     selected = st.session_state.get("selected_accounts", set())
 
+    # Card settings
+    _cfg         = st.session_state.get("settings", {})
+    card_cols    = int(_cfg.get("card_columns", 4))
+    card_order   = _cfg.get("card_field_order", CARD_FIELD_ORDER_DEFAULT)
+    card_order   = [f for f in card_order if f in CARD_FIELD_ORDER_DEFAULT] + \
+                   [f for f in CARD_FIELD_ORDER_DEFAULT if f not in card_order]
+    show_int     = _cfg.get("card_show_interactions", True)
+    show_last_by = _cfg.get("card_show_last_by", True)
+
     for acc in accs:
         d = days_since(acc["last_call_date"])
         last_note = acc["notes"][0] if acc.get("notes") else None
@@ -1030,25 +1040,31 @@ def render_accounts(active, is_rep):
             info_c   = row_cols[1] if acc.get("logo_b64") else row_cols[0]
             if acc.get("logo_b64"): row_cols[0].markdown(logo_md, unsafe_allow_html=True)
             with info_c:
-                # ── Core fields grid ───────────────────────────────────────────
-                g = st.columns(4); ci = 0
-                def show_in(grid, label, val, idx):
-                    if label in vis:
-                        grid[idx%4].markdown(f"**{label}:** {val}")
-                        return idx + 1
-                    return idx
-                ci = show_in(g, "ID",           f"`{acc['id']}`",            ci)
-                ci = show_in(g, "Account Name", acc["account_name"],          ci)
-                ci = show_in(g, "Brand Name",   acc["brand_name"],            ci)
-                ci = show_in(g, "Branches",     acc["branches"],              ci)
-                ci = show_in(g, "Sector",       acc["sector"],                ci)
-                ci = show_in(g, "Contact",      acc.get("contact_person","—"),ci)
+                # ── Core fields — in configured order ──────────────────────────
                 owner_u = get_user(acc.get("account_owner_id",""))
-                ci = show_in(g, "Account Owner", owner_u["name"] if owner_u else "—", ci)
-                if "Last Call" in vis:
-                    g[ci%4].markdown(f"**Last call:** {acc['last_call_date']} &nbsp;"+urgency_badge(d), unsafe_allow_html=True); ci+=1
-                f5 = acc.get("extra_fields",{}).get("f5_number","")
-                if f5: ci = show_in(g, "F5 Number", f5, ci)
+                f5      = acc.get("extra_fields",{}).get("f5_number","")
+                CARD_VALUES = {
+                    "ID":            f"`{acc['id']}`",
+                    "Account Name":  acc["account_name"],
+                    "Brand Name":    acc["brand_name"],
+                    "Branches":      str(acc["branches"]),
+                    "Sector":        acc["sector"],
+                    "Contact":       acc.get("contact_person","—"),
+                    "Account Owner": owner_u["name"] if owner_u else "—",
+                    "Last Call":     None,   # special — rendered inline
+                    "F5 Number":     f5,
+                }
+                g = st.columns(card_cols); ci = 0
+                for fname in card_order:
+                    if fname not in vis: continue
+                    if fname == "Last Call":
+                        g[ci%card_cols].markdown(
+                            f"**Last call:** {acc['last_call_date']} &nbsp;" + urgency_badge(d),
+                            unsafe_allow_html=True); ci += 1
+                    else:
+                        val = CARD_VALUES.get(fname, "")
+                        if val:
+                            g[ci%card_cols].markdown(f"**{fname}:** {val}"); ci += 1
 
                 # ── Custom fields — grouped by section ─────────────────────────
                 extra_fields_sorted = sorted(
@@ -1085,9 +1101,10 @@ def render_accounts(active, is_rep):
                     val = acc.get("extra_fields",{}).get(f["id"],"")
                     if val and f["label"] in vis:
                         ug[ui%4].markdown(f"**{f['label']}:** {val}"); ui+=1
-            st.markdown(f"**Last logged by:** {last_by}")
+            if show_last_by:
+                st.markdown(f"**Last logged by:** {last_by}")
 
-            if acc.get("notes"):
+            if show_int and acc.get("notes"):
                 st.markdown("**Recent interactions:**")
                 for note in acc["notes"][:3]:
                     u = get_user(note.get("member_id","")); s = get_status(note.get("status_id",""))
@@ -1419,14 +1436,60 @@ def render_schema():
             if changed:
                 s_obj["account_filters"] = af; save_settings(); st.rerun()
 
-        # ── Page Size ──────────────────────────────────────────────────────────
-        with st.expander("📄 Page Size", expanded=False):
+        # ── Page Layout ────────────────────────────────────────────────────────
+        with st.expander("📄 Page Layout", expanded=False):
             affect_badge("Accounts")
-            st.caption("Number of accounts displayed per page in the Accounts tab.")
+
+            # ── Accounts per page ──────────────────────────────────────────────
+            st.markdown("**Accounts per page**")
             cur_ps = int(s_obj.get("accounts_per_page", 20))
-            new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size")
+            new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size", label_visibility="collapsed")
             if int(new_ps) != cur_ps:
                 s_obj["accounts_per_page"] = int(new_ps); save_settings(); st.rerun()
+
+            # ── Account Card ───────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("**Account Card**")
+            st.caption("Control what appears on each account card and in what order.")
+
+            card_changed = False
+
+            # Columns per row
+            cc1, cc2 = st.columns(2)
+            cur_cols = int(s_obj.get("card_columns", 4))
+            new_cols = cc1.selectbox("Columns per row", [2, 3, 4],
+                index=[2,3,4].index(cur_cols) if cur_cols in [2,3,4] else 2,
+                key="card_cols_sel")
+            if new_cols != cur_cols:
+                s_obj["card_columns"] = new_cols; card_changed = True
+
+            # Extra card elements
+            cur_show_int = s_obj.get("card_show_interactions", True)
+            cur_show_by  = s_obj.get("card_show_last_by", True)
+            new_show_int = cc2.checkbox("Show recent interactions", value=cur_show_int, key="card_show_int")
+            new_show_by  = st.checkbox("Show 'last logged by'",    value=cur_show_by,  key="card_show_by")
+            if new_show_int != cur_show_int:
+                s_obj["card_show_interactions"] = new_show_int; card_changed = True
+            if new_show_by != cur_show_by:
+                s_obj["card_show_last_by"] = new_show_by; card_changed = True
+            if card_changed:
+                save_settings(); st.rerun()
+
+            # Field order
+            st.markdown("**Field order** — use ⬆/⬇ to reorder; visibility is controlled in Column Visibility")
+            saved_order = s_obj.get("card_field_order", CARD_FIELD_ORDER_DEFAULT)
+            # Keep canonical list in sync (add missing, drop unknown)
+            cur_order = [f for f in saved_order if f in CARD_FIELD_ORDER_DEFAULT] + \
+                        [f for f in CARD_FIELD_ORDER_DEFAULT if f not in saved_order]
+            for oi, fname in enumerate(cur_order):
+                oc1, oc2, oc3 = st.columns([5, 1, 1])
+                oc1.markdown(fname)
+                if oc2.button("⬆", key=f"co_up_{oi}", disabled=(oi == 0)):
+                    cur_order[oi], cur_order[oi-1] = cur_order[oi-1], cur_order[oi]
+                    s_obj["card_field_order"] = cur_order; save_settings(); st.rerun()
+                if oc3.button("⬇", key=f"co_dn_{oi}", disabled=(oi == len(cur_order)-1)):
+                    cur_order[oi], cur_order[oi+1] = cur_order[oi+1], cur_order[oi]
+                    s_obj["card_field_order"] = cur_order; save_settings(); st.rerun()
 
         # ── Sections ──────────────────────────────────────────────────────────
         with st.expander("📑 Sections", expanded=False):
