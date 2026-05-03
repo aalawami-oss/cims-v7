@@ -1346,211 +1346,200 @@ def render_schema():
                 st.rerun()
     with t2:
         st.subheader("System Layout")
-        st.caption("Column visibility, filters, page size, sections, field ordering, appearance and button labels — all persisted to Supabase.")
+        st.caption("Click any section to expand it. All settings are persisted to Supabase.")
 
-        # ── Column Visibility ──────────────────────────────────────────────────
-        st.markdown("#### Column Visibility")
-        all_cols = list(CORE_COLUMNS) + [f["label"] for f in st.session_state.account_extra_fields]
-        current  = st.session_state.get("visible_columns", list(CORE_COLUMNS))
-        col_grid = st.columns(4); new_vis = []
-        for i, col in enumerate(all_cols):
-            if col_grid[i%4].checkbox(col, value=col in current, key=f"layout_col_vis_{col}"):
-                new_vis.append(col)
-        if new_vis != current:
-            st.session_state.visible_columns = new_vis; st.rerun()
-
-        # ── Filter Management ──────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Active Filters")
-        st.caption("Toggle which filters appear in the Accounts tab.")
-        s_obj = st.session_state.settings
-        af    = s_obj.get("account_filters", {})
-        FILTER_LABELS = {
-            "search": "Search (text)", "sector": "Sector", "urgency": "Urgency",
-            "contact": "Contact person", "assignee": "Last called by",
-            "account_owner": "Account owner", "branches": "Branches (slider)",
-        }
-        fg = st.columns(3); changed = False
-        for i, (fk, fl) in enumerate(FILTER_LABELS.items()):
-            new_val = fg[i%3].checkbox(fl, value=af.get(fk, True), key=f"af_toggle_{fk}")
-            if new_val != af.get(fk, True):
-                af[fk] = new_val; changed = True
-        if changed:
-            s_obj["account_filters"] = af; save_settings(); st.rerun()
-
-        # ── Page Size ──────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Page Size")
-        st.caption("Number of accounts displayed per page in the Accounts tab.")
-        cur_ps = int(s_obj.get("accounts_per_page", 20))
-        new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size")
-        if int(new_ps) != cur_ps:
-            s_obj["accounts_per_page"] = int(new_ps); save_settings(); st.rerun()
-
-        st.markdown("---")
-        sections = st.session_state.account_sections
-        fields   = st.session_state.account_extra_fields
+        s_obj           = st.session_state.settings
+        sections        = st.session_state.account_sections
+        fields          = st.session_state.account_extra_fields
         sections_sorted = sorted(sections, key=lambda x: x.get("sort_order", 99))
 
-        # ── Sections CRUD ──────────────────────────────────────────────────────
-        st.markdown("#### Sections")
-        if not sections_sorted:
-            st.caption("No sections yet. Add one below to group your fields.")
+        # ── Column Visibility ──────────────────────────────────────────────────
+        with st.expander("🗂 Column Visibility", expanded=False):
+            all_cols = list(CORE_COLUMNS) + [f["label"] for f in st.session_state.account_extra_fields]
+            current  = st.session_state.get("visible_columns", list(CORE_COLUMNS))
+            col_grid = st.columns(4); new_vis = []
+            for i, col in enumerate(all_cols):
+                if col_grid[i%4].checkbox(col, value=col in current, key=f"layout_col_vis_{col}"):
+                    new_vis.append(col)
+            if new_vis != current:
+                st.session_state.visible_columns = new_vis; st.rerun()
 
-        for idx, sec in enumerate(sections_sorted):
-            sc1, sc2, sc3, sc4, sc5 = st.columns([4, 1, 1, 1, 1])
-            if st.session_state.get("renaming_section") == sec["id"]:
-                new_lbl = sc1.text_input("Rename", value=sec["label"], key=f"ren_lbl_{sec['id']}", label_visibility="collapsed")
-                if sc2.button("✓", key=f"ren_ok_{sec['id']}"):
-                    sec["label"] = new_lbl.strip() or sec["label"]
-                    st.session_state.pop("renaming_section", None)
+        # ── Active Filters ─────────────────────────────────────────────────────
+        with st.expander("🔍 Active Filters", expanded=False):
+            st.caption("Toggle which filters appear in the Accounts tab.")
+            af = s_obj.get("account_filters", {})
+            FILTER_LABELS = {
+                "search": "Search (text)", "sector": "Sector", "urgency": "Urgency",
+                "contact": "Contact person", "assignee": "Last called by",
+                "account_owner": "Account owner", "branches": "Branches (slider)",
+            }
+            fg = st.columns(3); changed = False
+            for i, (fk, fl) in enumerate(FILTER_LABELS.items()):
+                new_val = fg[i%3].checkbox(fl, value=af.get(fk, True), key=f"af_toggle_{fk}")
+                if new_val != af.get(fk, True):
+                    af[fk] = new_val; changed = True
+            if changed:
+                s_obj["account_filters"] = af; save_settings(); st.rerun()
+
+        # ── Page Size ──────────────────────────────────────────────────────────
+        with st.expander("📄 Page Size", expanded=False):
+            st.caption("Number of accounts displayed per page in the Accounts tab.")
+            cur_ps = int(s_obj.get("accounts_per_page", 20))
+            new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size")
+            if int(new_ps) != cur_ps:
+                s_obj["accounts_per_page"] = int(new_ps); save_settings(); st.rerun()
+
+        # ── Sections ──────────────────────────────────────────────────────────
+        with st.expander("📑 Sections", expanded=False):
+            if not sections_sorted:
+                st.caption("No sections yet. Add one below to group your fields.")
+            for idx, sec in enumerate(sections_sorted):
+                sc1, sc2, sc3, sc4, sc5 = st.columns([4, 1, 1, 1, 1])
+                if st.session_state.get("renaming_section") == sec["id"]:
+                    new_lbl = sc1.text_input("Rename", value=sec["label"], key=f"ren_lbl_{sec['id']}", label_visibility="collapsed")
+                    if sc2.button("✓", key=f"ren_ok_{sec['id']}"):
+                        sec["label"] = new_lbl.strip() or sec["label"]
+                        st.session_state.pop("renaming_section", None)
+                        save_layout(); st.rerun()
+                    if sc3.button("✗", key=f"ren_no_{sec['id']}"):
+                        st.session_state.pop("renaming_section", None); st.rerun()
+                else:
+                    sc1.markdown(f"**{sec['label']}**")
+                    if sc2.button("⬆", key=f"sec_up_{sec['id']}", disabled=(idx == 0)):
+                        tmp = sections_sorted[:]
+                        tmp[idx], tmp[idx-1] = tmp[idx-1], tmp[idx]
+                        for i, s in enumerate(tmp): s["sort_order"] = i
+                        save_layout(); st.rerun()
+                    if sc3.button("⬇", key=f"sec_dn_{sec['id']}", disabled=(idx == len(sections_sorted)-1)):
+                        tmp = sections_sorted[:]
+                        tmp[idx], tmp[idx+1] = tmp[idx+1], tmp[idx]
+                        for i, s in enumerate(tmp): s["sort_order"] = i
+                        save_layout(); st.rerun()
+                    if sc4.button("✏️", key=f"sec_edit_{sec['id']}"):
+                        st.session_state["renaming_section"] = sec["id"]; st.rerun()
+                    if sc5.button("🗑️", key=f"sec_del_{sec['id']}"):
+                        for f in st.session_state.account_extra_fields:
+                            if f.get("section_id") == sec["id"]:
+                                f["section_id"] = None
+                        st.session_state.account_sections = [s for s in st.session_state.account_sections if s["id"] != sec["id"]]
+                        save_layout(); st.rerun()
+            st.markdown("---")
+            with st.form("add_section_form"):
+                new_sec_lbl = st.text_input("New section name", placeholder="e.g. Contract Info")
+                if st.form_submit_button("Add section", type="primary") and new_sec_lbl.strip():
+                    max_ord = max((s.get("sort_order", 0) for s in sections), default=-1) + 1
+                    st.session_state.account_sections.append({
+                        "id":         "sec" + new_id(),
+                        "label":      new_sec_lbl.strip(),
+                        "sort_order": max_ord,
+                    })
                     save_layout(); st.rerun()
-                if sc3.button("✗", key=f"ren_no_{sec['id']}"):
-                    st.session_state.pop("renaming_section", None); st.rerun()
+
+        # ── Fields ────────────────────────────────────────────────────────────
+        with st.expander("🧩 Fields", expanded=False):
+            if not fields:
+                st.caption("No custom fields defined. Add fields in the Custom Fields tab.")
             else:
-                sc1.markdown(f"**{sec['label']}**")
-                if sc2.button("⬆", key=f"sec_up_{sec['id']}", disabled=(idx == 0)):
-                    tmp = sections_sorted[:]
-                    tmp[idx], tmp[idx-1] = tmp[idx-1], tmp[idx]
-                    for i, s in enumerate(tmp): s["sort_order"] = i
-                    save_layout(); st.rerun()
-                if sc3.button("⬇", key=f"sec_dn_{sec['id']}", disabled=(idx == len(sections_sorted)-1)):
-                    tmp = sections_sorted[:]
-                    tmp[idx], tmp[idx+1] = tmp[idx+1], tmp[idx]
-                    for i, s in enumerate(tmp): s["sort_order"] = i
-                    save_layout(); st.rerun()
-                if sc4.button("✏️", key=f"sec_edit_{sec['id']}"):
-                    st.session_state["renaming_section"] = sec["id"]; st.rerun()
-                if sc5.button("🗑️", key=f"sec_del_{sec['id']}"):
-                    for f in st.session_state.account_extra_fields:
-                        if f.get("section_id") == sec["id"]:
-                            f["section_id"] = None
-                    st.session_state.account_sections = [s for s in st.session_state.account_sections if s["id"] != sec["id"]]
-                    save_layout(); st.rerun()
-
-        st.markdown("---")
-        with st.form("add_section_form"):
-            new_sec_lbl = st.text_input("New section name", placeholder="e.g. Contract Info")
-            if st.form_submit_button("Add section", type="primary") and new_sec_lbl.strip():
-                max_ord = max((s.get("sort_order", 0) for s in sections), default=-1) + 1
-                st.session_state.account_sections.append({
-                    "id":         "sec" + new_id(),
-                    "label":      new_sec_lbl.strip(),
-                    "sort_order": max_ord,
-                })
-                save_layout(); st.rerun()
-
-        # ── Field ordering & section assignment ────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Fields")
-        if not fields:
-            st.caption("No custom fields defined. Add fields in the Custom Fields tab.")
-        else:
-            section_opts        = ["— None —"] + [s["label"] for s in sections_sorted]
-            section_id_by_label = {s["label"]: s["id"] for s in sections_sorted}
-            section_lbl_by_id   = {s["id"]: s["label"] for s in sections_sorted}
-
-            hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 1])
-            hc1.caption("Field"); hc2.caption("Section"); hc3.caption(""); hc4.caption("")
-
-            # Render unsectioned group first, then each section group
-            groups = [("Unsectioned", None)] + [(s["label"], s["id"]) for s in sections_sorted]
-            for grp_label, grp_id in groups:
-                grp_fields = sorted(
-                    [f for f in fields if f.get("section_id") == grp_id],
-                    key=lambda x: x.get("sort_order", 99)
-                )
-                if not grp_fields:
-                    continue
-                st.markdown(f"**{grp_label}**")
-                for i, f in enumerate(grp_fields):
-                    fc1, fc2, fc3, fc4 = st.columns([3, 2, 1, 1])
-                    fc1.markdown(f"{f['label']} `{f['type']}`")
-
-                    cur_lbl = section_lbl_by_id.get(f.get("section_id"), "— None —")
-                    cur_idx = section_opts.index(cur_lbl) if cur_lbl in section_opts else 0
-                    new_lbl = fc2.selectbox(
-                        "", section_opts, index=cur_idx,
-                        key=f"fsec_{f['id']}", label_visibility="collapsed"
+                section_opts        = ["— None —"] + [s["label"] for s in sections_sorted]
+                section_id_by_label = {s["label"]: s["id"] for s in sections_sorted}
+                section_lbl_by_id   = {s["id"]: s["label"] for s in sections_sorted}
+                hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 1])
+                hc1.caption("Field"); hc2.caption("Section"); hc3.caption(""); hc4.caption("")
+                groups = [("Unsectioned", None)] + [(s["label"], s["id"]) for s in sections_sorted]
+                for grp_label, grp_id in groups:
+                    grp_fields = sorted(
+                        [f for f in fields if f.get("section_id") == grp_id],
+                        key=lambda x: x.get("sort_order", 99)
                     )
-                    new_sid = section_id_by_label.get(new_lbl) if new_lbl != "— None —" else None
-                    if new_sid != f.get("section_id"):
-                        f["section_id"] = new_sid
-                        # Reset sort_order to end of new group
-                        max_so = max((x.get("sort_order", 0) for x in fields if x.get("section_id") == new_sid and x["id"] != f["id"]), default=-1)
-                        f["sort_order"] = max_so + 1
-                        save_layout(); st.rerun()
+                    if not grp_fields:
+                        continue
+                    st.markdown(f"**{grp_label}**")
+                    for i, f in enumerate(grp_fields):
+                        fc1, fc2, fc3, fc4 = st.columns([3, 2, 1, 1])
+                        fc1.markdown(f"{f['label']} `{f['type']}`")
+                        cur_lbl = section_lbl_by_id.get(f.get("section_id"), "— None —")
+                        cur_idx = section_opts.index(cur_lbl) if cur_lbl in section_opts else 0
+                        new_lbl = fc2.selectbox(
+                            "", section_opts, index=cur_idx,
+                            key=f"fsec_{f['id']}", label_visibility="collapsed"
+                        )
+                        new_sid = section_id_by_label.get(new_lbl) if new_lbl != "— None —" else None
+                        if new_sid != f.get("section_id"):
+                            f["section_id"] = new_sid
+                            max_so = max((x.get("sort_order", 0) for x in fields if x.get("section_id") == new_sid and x["id"] != f["id"]), default=-1)
+                            f["sort_order"] = max_so + 1
+                            save_layout(); st.rerun()
+                        if fc3.button("⬆", key=f"fup_{f['id']}", disabled=(i == 0)):
+                            tmp = grp_fields[:]
+                            tmp[i], tmp[i-1] = tmp[i-1], tmp[i]
+                            for j, x in enumerate(tmp): x["sort_order"] = j
+                            save_layout(); st.rerun()
+                        if fc4.button("⬇", key=f"fdn_{f['id']}", disabled=(i == len(grp_fields)-1)):
+                            tmp = grp_fields[:]
+                            tmp[i], tmp[i+1] = tmp[i+1], tmp[i]
+                            for j, x in enumerate(tmp): x["sort_order"] = j
+                            save_layout(); st.rerun()
 
-                    if fc3.button("⬆", key=f"fup_{f['id']}", disabled=(i == 0)):
-                        tmp = grp_fields[:]
-                        tmp[i], tmp[i-1] = tmp[i-1], tmp[i]
-                        for j, x in enumerate(tmp): x["sort_order"] = j
-                        save_layout(); st.rerun()
-                    if fc4.button("⬇", key=f"fdn_{f['id']}", disabled=(i == len(grp_fields)-1)):
-                        tmp = grp_fields[:]
-                        tmp[i], tmp[i+1] = tmp[i+1], tmp[i]
-                        for j, x in enumerate(tmp): x["sort_order"] = j
-                        save_layout(); st.rerun()
+        # ── System Identity ───────────────────────────────────────────────────
+        with st.expander("🏢 System Identity", expanded=False):
+            s = st.session_state.settings
+            with st.form("sys_settings"):
+                new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
+                logo_file = st.file_uploader("System logo (PNG/JPG)", type=["png","jpg","jpeg"], key="sys_logo_up")
+                if s.get("system_logo_b64"):
+                    st.markdown("**Current logo:**")
+                    st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
+                ia,ib,ic = st.columns(3)
+                do_save_id  = ia.form_submit_button("Save", type="primary")
+                do_clear_id = ib.form_submit_button("Remove logo")
+            if do_save_id:
+                s["system_name"]    = new_name
+                s["system_logo_b64"] = img_to_b64(logo_file) if logo_file else s.get("system_logo_b64")
+                save_settings(); st.success("Identity saved."); st.rerun()
+            if do_clear_id:
+                s["system_logo_b64"] = None
+                save_settings(); st.success("Logo removed."); st.rerun()
 
-        # ── Appearance ─────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### System Identity")
-        s = st.session_state.settings
-        with st.form("sys_settings"):
-            new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
-            logo_file = st.file_uploader("System logo (PNG/JPG)", type=["png","jpg","jpeg"], key="sys_logo_up")
-            if s.get("system_logo_b64"):
-                st.markdown("**Current logo:**")
-                st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
-            ia,ib,ic = st.columns(3)
-            do_save_id  = ia.form_submit_button("Save", type="primary")
-            do_clear_id = ib.form_submit_button("Remove logo")
-        if do_save_id:
-            s["system_name"]    = new_name
-            s["system_logo_b64"] = img_to_b64(logo_file) if logo_file else s.get("system_logo_b64")
-            save_settings(); st.success("Identity saved."); st.rerun()
-        if do_clear_id:
-            s["system_logo_b64"] = None
-            save_settings(); st.success("Logo removed."); st.rerun()
+        # ── Colors ────────────────────────────────────────────────────────────
+        with st.expander("🎨 Colors", expanded=False):
+            s = st.session_state.settings
+            st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
+            with st.form("color_settings"):
+                cc1, cc2 = st.columns(2)
+                new_pc = cc1.color_picker("Primary color",       value=s.get("primary_color", VIOLET))
+                new_lc = cc2.color_picker("Accent / light color", value=s.get("light_color",   VIOLET_LIGHT))
+                ca1, ca2 = st.columns(2)
+                do_save_color  = ca1.form_submit_button("Apply colors", type="primary")
+                do_reset_color = ca2.form_submit_button("Reset to defaults")
+            if do_save_color:
+                s["primary_color"] = new_pc; s["light_color"] = new_lc
+                save_settings(); st.success("Colors updated — refresh the page to see the full effect."); st.rerun()
+            if do_reset_color:
+                s["primary_color"] = VIOLET; s["light_color"] = VIOLET_LIGHT
+                save_settings(); st.success("Colors reset."); st.rerun()
 
-        st.markdown("---")
-        st.markdown("#### Colors")
-        st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
-        with st.form("color_settings"):
-            cc1, cc2 = st.columns(2)
-            new_pc = cc1.color_picker("Primary color",       value=s.get("primary_color", VIOLET))
-            new_lc = cc2.color_picker("Accent / light color", value=s.get("light_color",   VIOLET_LIGHT))
-            ca1, ca2 = st.columns(2)
-            do_save_color  = ca1.form_submit_button("Apply colors", type="primary")
-            do_reset_color = ca2.form_submit_button("Reset to defaults")
-        if do_save_color:
-            s["primary_color"] = new_pc; s["light_color"] = new_lc
-            save_settings(); st.success("Colors updated — refresh the page to see the full effect."); st.rerun()
-        if do_reset_color:
-            s["primary_color"] = VIOLET; s["light_color"] = VIOLET_LIGHT
-            save_settings(); st.success("Colors reset."); st.rerun()
-
-        st.markdown("---")
-        st.markdown("#### Button Labels")
-        st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
-        labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
-        with st.form("button_labels_form"):
-            new_labels = {}
-            bl_cols = st.columns(2)
-            for i, (key, default) in enumerate(DEFAULT_BUTTON_LABELS.items()):
-                cur = labels.get(key, default)
-                new_labels[key] = bl_cols[i%2].text_input(
-                    default, value=cur, key=f"bl_{key}", placeholder=default
-                )
-            bl1, bl2 = st.columns(2)
-            do_save_labels  = bl1.form_submit_button("Save labels", type="primary")
-            do_reset_labels = bl2.form_submit_button("Reset to defaults")
-        if do_save_labels:
-            s["button_labels"] = {k: v.strip() or DEFAULT_BUTTON_LABELS[k] for k, v in new_labels.items()}
-            save_settings(); st.success("Button labels saved."); st.rerun()
-        if do_reset_labels:
-            s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
-            save_settings(); st.success("Labels reset."); st.rerun()
+        # ── Button Labels ─────────────────────────────────────────────────────
+        with st.expander("🔘 Button Labels", expanded=False):
+            s = st.session_state.settings
+            st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
+            labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
+            with st.form("button_labels_form"):
+                new_labels = {}
+                bl_cols = st.columns(2)
+                for i, (key, default) in enumerate(DEFAULT_BUTTON_LABELS.items()):
+                    cur = labels.get(key, default)
+                    new_labels[key] = bl_cols[i%2].text_input(
+                        default, value=cur, key=f"bl_{key}", placeholder=default
+                    )
+                bl1, bl2 = st.columns(2)
+                do_save_labels  = bl1.form_submit_button("Save labels", type="primary")
+                do_reset_labels = bl2.form_submit_button("Reset to defaults")
+            if do_save_labels:
+                s["button_labels"] = {k: v.strip() or DEFAULT_BUTTON_LABELS[k] for k, v in new_labels.items()}
+                save_settings(); st.success("Button labels saved."); st.rerun()
+            if do_reset_labels:
+                s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
+                save_settings(); st.success("Labels reset."); st.rerun()
 
     with t3:
         st.subheader("Call status options")
