@@ -919,7 +919,28 @@ def render_accounts(active, is_rep):
         accs = [a for a in accs if a.get("extra_fields",{}).get(ef_id,"") in f_priority]
 
     accs = sorted(accs, key=lambda x: str(x.get(sort_by,"")), reverse=not sort_asc)
-    bc1.caption(f"{len(accs)} accounts")
+
+    # ── Pagination ─────────────────────────────────────────────────────────────
+    page_size   = int(st.session_state.get("settings", {}).get("accounts_per_page", 20))
+    total_accs  = len(accs)
+    total_pages = max(1, (total_accs + page_size - 1) // page_size)
+    cur_page    = min(st.session_state.get("acc_page", 1), total_pages)
+    st.session_state["acc_page"] = cur_page
+
+    bc1.caption(f"{total_accs} accounts · page {cur_page}/{total_pages}")
+
+    if total_pages > 1:
+        pg1, pg2, pg3 = st.columns([1, 2, 1])
+        if pg1.button("◀ Prev", key="acc_prev", disabled=(cur_page <= 1)):
+            st.session_state["acc_page"] = cur_page - 1; st.rerun()
+        pg2.markdown(
+            f"<div style='text-align:center;padding-top:6px'>Page {cur_page} of {total_pages}</div>",
+            unsafe_allow_html=True
+        )
+        if pg3.button("Next ▶", key="acc_next", disabled=(cur_page >= total_pages)):
+            st.session_state["acc_page"] = cur_page + 1; st.rerun()
+
+    accs = accs[(cur_page - 1) * page_size : cur_page * page_size]
 
     # ── Bulk delete toolbar (admin only) ───────────────────────────────────────
     if is_admin and len(accs)>0:
@@ -1356,6 +1377,15 @@ def render_schema():
                 af[fk] = new_val; changed = True
         if changed:
             s_obj["account_filters"] = af; save_settings(); st.rerun()
+
+        # ── Page Size ──────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Page Size")
+        st.caption("Number of accounts displayed per page in the Accounts tab.")
+        cur_ps = int(s_obj.get("accounts_per_page", 20))
+        new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size")
+        if int(new_ps) != cur_ps:
+            s_obj["accounts_per_page"] = int(new_ps); save_settings(); st.rerun()
 
         st.markdown("---")
         sections = st.session_state.account_sections
