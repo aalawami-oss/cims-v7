@@ -1311,7 +1311,7 @@ def render_users(active):
 # FIELD BUILDER + ROLES + SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 def render_schema():
-    t1,t2,t3,t4,t5=st.tabs(["Custom Fields","Account Layout","Call Statuses","Role Manager","Appearance"])
+    t1,t2,t3,t4=st.tabs(["Custom Fields","System Layout","Call Statuses","Role Manager"])
     with t1:
         st.subheader("Custom fields")
         FIELD_TYPES = ["text","number","date","select"]
@@ -1345,8 +1345,8 @@ def render_schema():
                 else:               st.session_state.call_extra_fields.append(nf)
                 st.rerun()
     with t2:
-        st.subheader("Account Layout")
-        st.caption("Column visibility, active filters, sections and field ordering — all persisted to Supabase.")
+        st.subheader("System Layout")
+        st.caption("Column visibility, filters, page size, sections, field ordering, appearance and button labels — all persisted to Supabase.")
 
         # ── Column Visibility ──────────────────────────────────────────────────
         st.markdown("#### Column Visibility")
@@ -1492,6 +1492,66 @@ def render_schema():
                         for j, x in enumerate(tmp): x["sort_order"] = j
                         save_layout(); st.rerun()
 
+        # ── Appearance ─────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### System Identity")
+        s = st.session_state.settings
+        with st.form("sys_settings"):
+            new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
+            logo_file = st.file_uploader("System logo (PNG/JPG)", type=["png","jpg","jpeg"], key="sys_logo_up")
+            if s.get("system_logo_b64"):
+                st.markdown("**Current logo:**")
+                st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
+            ia,ib,ic = st.columns(3)
+            do_save_id  = ia.form_submit_button("Save", type="primary")
+            do_clear_id = ib.form_submit_button("Remove logo")
+        if do_save_id:
+            s["system_name"]    = new_name
+            s["system_logo_b64"] = img_to_b64(logo_file) if logo_file else s.get("system_logo_b64")
+            save_settings(); st.success("Identity saved."); st.rerun()
+        if do_clear_id:
+            s["system_logo_b64"] = None
+            save_settings(); st.success("Logo removed."); st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### Colors")
+        st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
+        with st.form("color_settings"):
+            cc1, cc2 = st.columns(2)
+            new_pc = cc1.color_picker("Primary color",       value=s.get("primary_color", VIOLET))
+            new_lc = cc2.color_picker("Accent / light color", value=s.get("light_color",   VIOLET_LIGHT))
+            ca1, ca2 = st.columns(2)
+            do_save_color  = ca1.form_submit_button("Apply colors", type="primary")
+            do_reset_color = ca2.form_submit_button("Reset to defaults")
+        if do_save_color:
+            s["primary_color"] = new_pc; s["light_color"] = new_lc
+            save_settings(); st.success("Colors updated — refresh the page to see the full effect."); st.rerun()
+        if do_reset_color:
+            s["primary_color"] = VIOLET; s["light_color"] = VIOLET_LIGHT
+            save_settings(); st.success("Colors reset."); st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### Button Labels")
+        st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
+        labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
+        with st.form("button_labels_form"):
+            new_labels = {}
+            bl_cols = st.columns(2)
+            for i, (key, default) in enumerate(DEFAULT_BUTTON_LABELS.items()):
+                cur = labels.get(key, default)
+                new_labels[key] = bl_cols[i%2].text_input(
+                    default, value=cur, key=f"bl_{key}", placeholder=default
+                )
+            bl1, bl2 = st.columns(2)
+            do_save_labels  = bl1.form_submit_button("Save labels", type="primary")
+            do_reset_labels = bl2.form_submit_button("Reset to defaults")
+        if do_save_labels:
+            s["button_labels"] = {k: v.strip() or DEFAULT_BUTTON_LABELS[k] for k, v in new_labels.items()}
+            save_settings(); st.success("Button labels saved."); st.rerun()
+        if do_reset_labels:
+            s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
+            save_settings(); st.success("Labels reset."); st.rerun()
+
     with t3:
         st.subheader("Call status options")
         for s in st.session_state.call_statuses:
@@ -1558,70 +1618,6 @@ def render_schema():
         st.markdown("---"); st.subheader("Permissions matrix")
         mat={pl:{r["label"]:("✓" if (pk in (r.get("perms") or set()) or ("add_account" in (r.get("perms") or set()) and pk in ("acc_add","acc_edit","acc_edit_name","acc_edit_brand","acc_edit_f5","acc_delete"))) else "✕") for r in st.session_state.roles} for pk,pl in ALL_PERMS}
         st.dataframe(pd.DataFrame(mat).T, use_container_width=True)
-    with t5:
-        st.subheader("Appearance")
-        s = st.session_state.settings
-
-        # ── System identity ──────────────────────────────────────────────────
-        st.markdown("#### System Identity")
-        with st.form("sys_settings"):
-            new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
-            logo_file = st.file_uploader("System logo (PNG/JPG)", type=["png","jpg","jpeg"], key="sys_logo_up")
-            if s.get("system_logo_b64"):
-                st.markdown("**Current logo:**")
-                st.markdown(b64_img_tag(s["system_logo_b64"],"sys-logo","Logo"), unsafe_allow_html=True)
-            ia,ib,ic = st.columns(3)
-            do_save_id  = ia.form_submit_button("Save", type="primary")
-            do_clear_id = ib.form_submit_button("Remove logo")
-        if do_save_id:
-            s["system_name"]    = new_name
-            s["system_logo_b64"] = img_to_b64(logo_file) if logo_file else s.get("system_logo_b64")
-            save_settings(); st.success("Identity saved."); st.rerun()
-        if do_clear_id:
-            s["system_logo_b64"] = None
-            save_settings(); st.success("Logo removed."); st.rerun()
-
-        # ── Colors ────────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Colors")
-        st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
-        with st.form("color_settings"):
-            cc1, cc2 = st.columns(2)
-            new_pc = cc1.color_picker("Primary color",       value=s.get("primary_color", VIOLET))
-            new_lc = cc2.color_picker("Accent / light color", value=s.get("light_color",   VIOLET_LIGHT))
-            ca1, ca2 = st.columns(2)
-            do_save_color  = ca1.form_submit_button("Apply colors", type="primary")
-            do_reset_color = ca2.form_submit_button("Reset to defaults")
-        if do_save_color:
-            s["primary_color"] = new_pc; s["light_color"] = new_lc
-            save_settings(); st.success("Colors updated — refresh the page to see the full effect."); st.rerun()
-        if do_reset_color:
-            s["primary_color"] = VIOLET; s["light_color"] = VIOLET_LIGHT
-            save_settings(); st.success("Colors reset."); st.rerun()
-
-        # ── Button labels ─────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Button Labels")
-        st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
-        labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
-        with st.form("button_labels_form"):
-            new_labels = {}
-            bl_cols = st.columns(2)
-            for i, (key, default) in enumerate(DEFAULT_BUTTON_LABELS.items()):
-                cur = labels.get(key, default)
-                new_labels[key] = bl_cols[i%2].text_input(
-                    default, value=cur, key=f"bl_{key}", placeholder=default
-                )
-            bl1, bl2 = st.columns(2)
-            do_save_labels  = bl1.form_submit_button("Save labels", type="primary")
-            do_reset_labels = bl2.form_submit_button("Reset to defaults")
-        if do_save_labels:
-            s["button_labels"] = {k: v.strip() or DEFAULT_BUTTON_LABELS[k] for k, v in new_labels.items()}
-            save_settings(); st.success("Button labels saved."); st.rerun()
-        if do_reset_labels:
-            s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
-            save_settings(); st.success("Labels reset."); st.rerun()
-
 # ══════════════════════════════════════════════════════════════════════════════
 # LOG CALL MODAL
 # ══════════════════════════════════════════════════════════════════════════════
