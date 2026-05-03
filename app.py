@@ -230,6 +230,7 @@ def save_layout():
     ef["_layout"] = {
         "sections": st.session_state.get("account_sections", []),
         "account_extra_fields": st.session_state.get("account_extra_fields", []),
+        "call_extra_fields": st.session_state.get("call_extra_fields", []),
     }
     for i, u in enumerate(st.session_state.users):
         if u["id"] == admin["id"]:
@@ -577,7 +578,10 @@ def init_state():
         {"id":"ef2","label":"Priority","type":"select","options":["High","Medium","Low"], "sort_order":1, "section_id":None},
     ]
     st.session_state.user_extra_fields   = [{"id":"uf1","label":"Phone","type":"text","options":[]},{"id":"uf2","label":"Territory","type":"text","options":[]}]
-    st.session_state.call_extra_fields   = [{"id":"cf1","label":"Deal Size","type":"text","options":[]},{"id":"cf2","label":"Next Step","type":"text","options":[]}]
+    st.session_state.call_extra_fields   = [
+        {"id":"cf1","label":"Deal Size","type":"text",  "options":[], "sort_order":0, "section_id":None},
+        {"id":"cf2","label":"Next Step","type":"text",  "options":[], "sort_order":1, "section_id":None},
+    ]
     st.session_state.visible_columns     = list(CORE_COLUMNS)
     st.session_state.selected_accounts   = set()
     st.session_state.account_sections    = []   # {"id","label","sort_order"}
@@ -600,6 +604,10 @@ def init_state():
             st.session_state.account_sections = layout["sections"]
         if layout.get("account_extra_fields"):
             st.session_state.account_extra_fields = layout["account_extra_fields"]
+        if layout.get("call_extra_fields"):
+            for f in layout["call_extra_fields"]:
+                f.setdefault("section_id", None); f.setdefault("sort_order", 99)
+            st.session_state.call_extra_fields = layout["call_extra_fields"]
         saved_settings = ef.get("_settings", {})
         if saved_settings:
             for k, v in saved_settings.items():
@@ -1048,7 +1056,8 @@ def render_accounts(active, is_rep):
                     key=lambda x: x.get("sort_order", 99)
                 )
                 sections = sorted(
-                    st.session_state.get("account_sections", []),
+                    [s for s in st.session_state.get("account_sections", [])
+                     if "Accounts" in s.get("affects", ["Accounts"])],
                     key=lambda x: x.get("sort_order", 99)
                 )
                 assigned_to_section = {f["id"] for f in extra_fields_sorted if f.get("section_id")}
@@ -1444,9 +1453,14 @@ def render_schema():
                             SECTION_AFFECT_OPTIONS,
                             default=[a for a in sec["affects"] if a in SECTION_AFFECT_OPTIONS],
                         )
-                        # Fields belonging to this section
-                        all_field_labels     = [f["label"] for f in fields]
-                        current_field_labels = [f["label"] for f in fields if f.get("section_id") == sec["id"]]
+                        # Fields belonging to this section — filtered by affects
+                        affected_fields = []
+                        if "Accounts" in sec.get("affects", ["Accounts"]):
+                            affected_fields += list(st.session_state.account_extra_fields)
+                        if "Calls" in sec.get("affects", []):
+                            affected_fields += list(st.session_state.call_extra_fields)
+                        all_field_labels     = [f["label"] for f in affected_fields]
+                        current_field_labels = [f["label"] for f in affected_fields if f.get("section_id") == sec["id"]]
                         new_field_labels = st.multiselect(
                             "Fields in this section",
                             all_field_labels,
@@ -1458,12 +1472,13 @@ def render_schema():
                     if do_save_sec:
                         sec["label"]   = new_lbl.strip() or sec["label"]
                         sec["affects"] = new_affects or ["Accounts"]
-                        new_fids = {f["id"] for f in fields if f["label"] in new_field_labels}
-                        for f in st.session_state.account_extra_fields:
-                            if f["id"] in new_fids:
-                                f["section_id"] = sec["id"]
-                            elif f.get("section_id") == sec["id"]:
-                                f["section_id"] = None
+                        new_fids = {f["id"] for f in affected_fields if f["label"] in new_field_labels}
+                        for pool in (st.session_state.account_extra_fields, st.session_state.call_extra_fields):
+                            for f in pool:
+                                if f["id"] in new_fids:
+                                    f["section_id"] = sec["id"]
+                                elif f.get("section_id") == sec["id"]:
+                                    f["section_id"] = None
                         st.session_state.pop("editing_section", None)
                         save_layout(); st.rerun()
                     if do_cancel_sec:
@@ -1492,9 +1507,10 @@ def render_schema():
                     if sc5.button("✏️", key=f"sec_edit_{sec['id']}"):
                         st.session_state["editing_section"] = sec["id"]; st.rerun()
                     if sc6.button("🗑️", key=f"sec_del_{sec['id']}"):
-                        for f in st.session_state.account_extra_fields:
-                            if f.get("section_id") == sec["id"]:
-                                f["section_id"] = None
+                        for pool in (st.session_state.account_extra_fields, st.session_state.call_extra_fields):
+                            for f in pool:
+                                if f.get("section_id") == sec["id"]:
+                                    f["section_id"] = None
                         st.session_state.account_sections = [s for s in st.session_state.account_sections if s["id"] != sec["id"]]
                         save_layout(); st.rerun()
 
@@ -1516,46 +1532,58 @@ def render_schema():
 
         # ── Fields ────────────────────────────────────────────────────────────
         with st.expander("🧩 Fields", expanded=False):
-            affect_badge("Accounts")
-            if not fields:
+            affect_badge("Accounts"); affect_badge("Calls")
+            all_fields_combined = (
+                [(f, "Account") for f in st.session_state.account_extra_fields] +
+                [(f, "Call")    for f in st.session_state.call_extra_fields]
+            )
+            if not all_fields_combined:
                 st.caption("No custom fields defined. Add fields in the Custom Fields tab.")
             else:
                 section_opts        = ["— None —"] + [s["label"] for s in sections_sorted]
                 section_id_by_label = {s["label"]: s["id"] for s in sections_sorted}
                 section_lbl_by_id   = {s["id"]: s["label"] for s in sections_sorted}
-                hc1, hc2, hc3, hc4 = st.columns([3, 2, 1, 1])
-                hc1.caption("Field"); hc2.caption("Section"); hc3.caption(""); hc4.caption("")
+                hc1, hc2, hc3, hc4, hc5 = st.columns([3, 1, 2, 1, 1])
+                hc1.caption("Field"); hc2.caption("Entity"); hc3.caption("Section"); hc4.caption(""); hc5.caption("")
                 groups = [("Unsectioned", None)] + [(s["label"], s["id"]) for s in sections_sorted]
                 for grp_label, grp_id in groups:
-                    grp_fields = sorted(
-                        [f for f in fields if f.get("section_id") == grp_id],
-                        key=lambda x: x.get("sort_order", 99)
+                    grp_entries = sorted(
+                        [(f, ent) for f, ent in all_fields_combined if f.get("section_id") == grp_id],
+                        key=lambda x: x[0].get("sort_order", 99)
                     )
-                    if not grp_fields:
+                    if not grp_entries:
                         continue
                     st.markdown(f"**{grp_label}**")
-                    for i, f in enumerate(grp_fields):
-                        fc1, fc2, fc3, fc4 = st.columns([3, 2, 1, 1])
+                    for i, (f, ent) in enumerate(grp_entries):
+                        fc1, fc2, fc3, fc4, fc5 = st.columns([3, 1, 2, 1, 1])
                         fc1.markdown(f"{f['label']} `{f['type']}`")
+                        fc2.caption(ent)
+                        # Only offer sections compatible with this field's entity
+                        ent_affects = "Accounts" if ent == "Account" else "Calls"
+                        compat_secs = [s for s in sections_sorted if ent_affects in s.get("affects", ["Accounts"])]
+                        compat_opts = ["— None —"] + [s["label"] for s in compat_secs]
+                        compat_id_by_lbl = {s["label"]: s["id"] for s in compat_secs}
                         cur_lbl = section_lbl_by_id.get(f.get("section_id"), "— None —")
-                        cur_idx = section_opts.index(cur_lbl) if cur_lbl in section_opts else 0
-                        new_lbl = fc2.selectbox(
-                            "", section_opts, index=cur_idx,
+                        if cur_lbl not in compat_opts: cur_lbl = "— None —"
+                        cur_idx = compat_opts.index(cur_lbl)
+                        new_lbl = fc3.selectbox(
+                            "", compat_opts, index=cur_idx,
                             key=f"fsec_{f['id']}", label_visibility="collapsed"
                         )
-                        new_sid = section_id_by_label.get(new_lbl) if new_lbl != "— None —" else None
+                        new_sid = compat_id_by_lbl.get(new_lbl) if new_lbl != "— None —" else None
                         if new_sid != f.get("section_id"):
                             f["section_id"] = new_sid
-                            max_so = max((x.get("sort_order", 0) for x in fields if x.get("section_id") == new_sid and x["id"] != f["id"]), default=-1)
+                            pool = st.session_state.account_extra_fields if ent=="Account" else st.session_state.call_extra_fields
+                            max_so = max((x.get("sort_order",0) for x in pool if x.get("section_id")==new_sid and x["id"]!=f["id"]), default=-1)
                             f["sort_order"] = max_so + 1
                             save_layout(); st.rerun()
-                        if fc3.button("⬆", key=f"fup_{f['id']}", disabled=(i == 0)):
-                            tmp = grp_fields[:]
+                        if fc4.button("⬆", key=f"fup_{f['id']}", disabled=(i == 0)):
+                            tmp = [e for e, _ in grp_entries]
                             tmp[i], tmp[i-1] = tmp[i-1], tmp[i]
                             for j, x in enumerate(tmp): x["sort_order"] = j
                             save_layout(); st.rerun()
-                        if fc4.button("⬇", key=f"fdn_{f['id']}", disabled=(i == len(grp_fields)-1)):
-                            tmp = grp_fields[:]
+                        if fc5.button("⬇", key=f"fdn_{f['id']}", disabled=(i == len(grp_entries)-1)):
+                            tmp = [e for e, _ in grp_entries]
                             tmp[i], tmp[i+1] = tmp[i+1], tmp[i]
                             for j, x in enumerate(tmp): x["sort_order"] = j
                             save_layout(); st.rerun()
@@ -1721,9 +1749,23 @@ def render_log_modal(active):
         member_name=c1.selectbox("Team member",names,index=def_i); call_date=c2.date_input("Call date",value=date.today(),max_value=date.today())
         slabels=[s["label"] for s in st.session_state.call_statuses]; status_lbl=st.selectbox("Call status",slabels if slabels else ["—"])
         ef_vals={}
-        for f in st.session_state.call_extra_fields:
+        call_secs = sorted(
+            [s for s in st.session_state.get("account_sections",[]) if "Calls" in s.get("affects",[])],
+            key=lambda x: x.get("sort_order",99)
+        )
+        call_fields_sorted = sorted(st.session_state.call_extra_fields, key=lambda x: x.get("sort_order",99))
+        def _render_call_field(f):
             if f["type"]=="select": ef_vals[f["id"]]=st.selectbox(f["label"],[""]+(f["options"] or []),key=f"lf_{f['id']}")
             else: ef_vals[f["id"]]=st.text_input(f["label"],key=f"lf_{f['id']}")
+        # Unsectioned call fields
+        for f in [x for x in call_fields_sorted if not x.get("section_id")]:
+            _render_call_field(f)
+        # Sectioned call fields
+        for sec in call_secs:
+            sec_fields = [f for f in call_fields_sorted if f.get("section_id")==sec["id"]]
+            if not sec_fields: continue
+            st.markdown(f"**{sec['label']}**")
+            for f in sec_fields: _render_call_field(f)
         notes_text=st.text_area("Notes",height=80)
         s1,s2=st.columns(2); do_save=s1.form_submit_button("Save log",type="primary"); do_cancel=s2.form_submit_button("Cancel")
     if do_save:
