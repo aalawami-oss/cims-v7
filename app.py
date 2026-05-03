@@ -101,6 +101,7 @@ TEAM_COLORS = [
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
 CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","Account Owner","F5 Number"]
+SECTION_AFFECT_OPTIONS = ["Accounts", "Calls", "Users"]
 
 # Ordered list of main-nav tabs.  key=internal id, label=display name, removable=can admin hide it
 TAB_DEFS = [
@@ -1421,47 +1422,95 @@ def render_schema():
         # ── Sections ──────────────────────────────────────────────────────────
         with st.expander("📑 Sections", expanded=False):
             affect_badge("Accounts")
+
             if not sections_sorted:
                 st.caption("No sections yet. Add one below to group your fields.")
+
+            # Column headers
+            if sections_sorted:
+                hh1, hh2, hh3, hh4, hh5, hh6 = st.columns([3, 2, 1, 1, 1, 1])
+                hh1.caption("Section"); hh2.caption("Affects"); hh3.caption(""); hh4.caption(""); hh5.caption(""); hh6.caption("")
+
             for idx, sec in enumerate(sections_sorted):
-                sc1, sc2, sc3, sc4, sc5 = st.columns([4, 1, 1, 1, 1])
-                if st.session_state.get("renaming_section") == sec["id"]:
-                    new_lbl = sc1.text_input("Rename", value=sec["label"], key=f"ren_lbl_{sec['id']}", label_visibility="collapsed")
-                    if sc2.button("✓", key=f"ren_ok_{sec['id']}"):
-                        sec["label"] = new_lbl.strip() or sec["label"]
-                        st.session_state.pop("renaming_section", None)
+                sec.setdefault("affects", ["Accounts"])  # backward compat
+
+                if st.session_state.get("editing_section") == sec["id"]:
+                    st.markdown(f"**Editing: {sec['label']}**")
+                    with st.form(f"edit_sec_{sec['id']}"):
+                        ef1, ef2 = st.columns(2)
+                        new_lbl     = ef1.text_input("Section name", value=sec["label"])
+                        new_affects = ef2.multiselect(
+                            "Affects",
+                            SECTION_AFFECT_OPTIONS,
+                            default=[a for a in sec["affects"] if a in SECTION_AFFECT_OPTIONS],
+                        )
+                        # Fields belonging to this section
+                        all_field_labels     = [f["label"] for f in fields]
+                        current_field_labels = [f["label"] for f in fields if f.get("section_id") == sec["id"]]
+                        new_field_labels = st.multiselect(
+                            "Fields in this section",
+                            all_field_labels,
+                            default=current_field_labels,
+                        )
+                        sv, ca = st.columns(2)
+                        do_save_sec   = sv.form_submit_button("Save", type="primary")
+                        do_cancel_sec = ca.form_submit_button("Cancel")
+                    if do_save_sec:
+                        sec["label"]   = new_lbl.strip() or sec["label"]
+                        sec["affects"] = new_affects or ["Accounts"]
+                        new_fids = {f["id"] for f in fields if f["label"] in new_field_labels}
+                        for f in st.session_state.account_extra_fields:
+                            if f["id"] in new_fids:
+                                f["section_id"] = sec["id"]
+                            elif f.get("section_id") == sec["id"]:
+                                f["section_id"] = None
+                        st.session_state.pop("editing_section", None)
                         save_layout(); st.rerun()
-                    if sc3.button("✗", key=f"ren_no_{sec['id']}"):
-                        st.session_state.pop("renaming_section", None); st.rerun()
+                    if do_cancel_sec:
+                        st.session_state.pop("editing_section", None); st.rerun()
                 else:
+                    sc1, sc2, sc3, sc4, sc5, sc6 = st.columns([3, 2, 1, 1, 1, 1])
                     sc1.markdown(f"**{sec['label']}**")
-                    if sc2.button("⬆", key=f"sec_up_{sec['id']}", disabled=(idx == 0)):
+                    # Affects badges inline
+                    badges_html = " ".join(
+                        f'<span style="font-size:11px;background:{AFFECT_COLORS.get(a,("#f5f5f5","#555"))[0]};'
+                        f'color:{AFFECT_COLORS.get(a,("#f5f5f5","#555"))[1]};padding:2px 8px;'
+                        f'border-radius:10px;font-weight:600">{a}</span>'
+                        for a in sec["affects"]
+                    )
+                    sc2.markdown(badges_html or "—", unsafe_allow_html=True)
+                    if sc3.button("⬆", key=f"sec_up_{sec['id']}", disabled=(idx == 0)):
                         tmp = sections_sorted[:]
                         tmp[idx], tmp[idx-1] = tmp[idx-1], tmp[idx]
                         for i, s in enumerate(tmp): s["sort_order"] = i
                         save_layout(); st.rerun()
-                    if sc3.button("⬇", key=f"sec_dn_{sec['id']}", disabled=(idx == len(sections_sorted)-1)):
+                    if sc4.button("⬇", key=f"sec_dn_{sec['id']}", disabled=(idx == len(sections_sorted)-1)):
                         tmp = sections_sorted[:]
                         tmp[idx], tmp[idx+1] = tmp[idx+1], tmp[idx]
                         for i, s in enumerate(tmp): s["sort_order"] = i
                         save_layout(); st.rerun()
-                    if sc4.button("✏️", key=f"sec_edit_{sec['id']}"):
-                        st.session_state["renaming_section"] = sec["id"]; st.rerun()
-                    if sc5.button("🗑️", key=f"sec_del_{sec['id']}"):
+                    if sc5.button("✏️", key=f"sec_edit_{sec['id']}"):
+                        st.session_state["editing_section"] = sec["id"]; st.rerun()
+                    if sc6.button("🗑️", key=f"sec_del_{sec['id']}"):
                         for f in st.session_state.account_extra_fields:
                             if f.get("section_id") == sec["id"]:
                                 f["section_id"] = None
                         st.session_state.account_sections = [s for s in st.session_state.account_sections if s["id"] != sec["id"]]
                         save_layout(); st.rerun()
+
             st.markdown("---")
+            st.caption("Add a new section")
             with st.form("add_section_form"):
-                new_sec_lbl = st.text_input("New section name", placeholder="e.g. Contract Info")
+                af1, af2 = st.columns(2)
+                new_sec_lbl     = af1.text_input("Section name", placeholder="e.g. Contract Info")
+                new_sec_affects = af2.multiselect("Affects", SECTION_AFFECT_OPTIONS, default=["Accounts"])
                 if st.form_submit_button("Add section", type="primary") and new_sec_lbl.strip():
                     max_ord = max((s.get("sort_order", 0) for s in sections), default=-1) + 1
                     st.session_state.account_sections.append({
                         "id":         "sec" + new_id(),
                         "label":      new_sec_lbl.strip(),
                         "sort_order": max_ord,
+                        "affects":    new_sec_affects or ["Accounts"],
                     })
                     save_layout(); st.rerun()
 
