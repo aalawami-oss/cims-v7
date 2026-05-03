@@ -101,6 +101,16 @@ TEAM_COLORS = [
 SECTORS  = ["Retail","F&B","Finance","Healthcare","Logistics","Tech","Education","Real Estate"]
 CHART_TYPES = ["Bar","Stacked Bar","Line","Area","Horizontal Bar","Pie","Donut","Scatter"]
 CORE_COLUMNS = ["ID","Account Name","Brand Name","Branches","Sector","Last Call","Contact","Account Owner","F5 Number"]
+
+# Ordered list of main-nav tabs.  key=internal id, label=display name, removable=can admin hide it
+TAB_DEFS = [
+    ("dashboard",    "Dashboard",        True),
+    ("accounts",     "Accounts",         False),
+    ("urgency",      "Urgency",          True),
+    ("activity_log", "Activity Log",     True),
+    ("users",        "Users",            True),
+    ("deleted",      "Deleted Accounts", True),
+]
 BRANDS = [
     ("Al Futtaim Group","ACE Hardware"),("Alshaya Group","Starbucks ME"),
     ("Majid Al Futtaim","Mall of the Emirates"),("Jarir Bookstore","Jarir"),
@@ -452,6 +462,22 @@ def days_since(d):
     except: return 999
 def rnd_date(n): return str(date.today()-timedelta(days=random.randint(0,n)))
 def initials(name): return "".join(p[0] for p in name.split()[:2]).upper()
+
+AFFECT_COLORS = {
+    "Accounts":    ("#e3f2fd", "#1565c0"),
+    "Calls":       ("#e8f5e9", "#2e7d32"),
+    "Users":       ("#fce4ec", "#880e4f"),
+    "Navigation":  ("#f3e5f5", "#6a1b9a"),
+    "System-wide": ("#fff8e1", "#f57f17"),
+}
+def affect_badge(level: str):
+    bg, fg = AFFECT_COLORS.get(level, ("#f5f5f5", "#555"))
+    st.markdown(
+        f'<span style="font-size:11px;background:{bg};color:{fg};padding:2px 9px;'
+        f'border-radius:10px;font-weight:600;letter-spacing:.02em">Affects: {level}</span>',
+        unsafe_allow_html=True
+    )
+    st.markdown("")
 
 def urgency_badge(d):
     if d>30: return f'<span class="badge-danger">{d}d ago</span>'
@@ -1355,6 +1381,7 @@ def render_schema():
 
         # ── Column Visibility ──────────────────────────────────────────────────
         with st.expander("🗂 Column Visibility", expanded=False):
+            affect_badge("Accounts")
             all_cols = list(CORE_COLUMNS) + [f["label"] for f in st.session_state.account_extra_fields]
             current  = st.session_state.get("visible_columns", list(CORE_COLUMNS))
             col_grid = st.columns(4); new_vis = []
@@ -1366,6 +1393,7 @@ def render_schema():
 
         # ── Active Filters ─────────────────────────────────────────────────────
         with st.expander("🔍 Active Filters", expanded=False):
+            affect_badge("Accounts")
             st.caption("Toggle which filters appear in the Accounts tab.")
             af = s_obj.get("account_filters", {})
             FILTER_LABELS = {
@@ -1383,6 +1411,7 @@ def render_schema():
 
         # ── Page Size ──────────────────────────────────────────────────────────
         with st.expander("📄 Page Size", expanded=False):
+            affect_badge("Accounts")
             st.caption("Number of accounts displayed per page in the Accounts tab.")
             cur_ps = int(s_obj.get("accounts_per_page", 20))
             new_ps = st.number_input("Accounts per page", min_value=5, max_value=500, value=cur_ps, step=5, key="layout_page_size")
@@ -1391,6 +1420,7 @@ def render_schema():
 
         # ── Sections ──────────────────────────────────────────────────────────
         with st.expander("📑 Sections", expanded=False):
+            affect_badge("Accounts")
             if not sections_sorted:
                 st.caption("No sections yet. Add one below to group your fields.")
             for idx, sec in enumerate(sections_sorted):
@@ -1437,6 +1467,7 @@ def render_schema():
 
         # ── Fields ────────────────────────────────────────────────────────────
         with st.expander("🧩 Fields", expanded=False):
+            affect_badge("Accounts")
             if not fields:
                 st.caption("No custom fields defined. Add fields in the Custom Fields tab.")
             else:
@@ -1482,6 +1513,7 @@ def render_schema():
 
         # ── System Identity ───────────────────────────────────────────────────
         with st.expander("🏢 System Identity", expanded=False):
+            affect_badge("System-wide")
             s = st.session_state.settings
             with st.form("sys_settings"):
                 new_name  = st.text_input("System name", value=s.get("system_name","CIMS"))
@@ -1502,6 +1534,7 @@ def render_schema():
 
         # ── Colors ────────────────────────────────────────────────────────────
         with st.expander("🎨 Colors", expanded=False):
+            affect_badge("System-wide")
             s = st.session_state.settings
             st.caption("Primary is used for buttons, borders, and text accents. Light is used for badge and banner backgrounds.")
             with st.form("color_settings"):
@@ -1520,6 +1553,7 @@ def render_schema():
 
         # ── Button Labels ─────────────────────────────────────────────────────
         with st.expander("🔘 Button Labels", expanded=False):
+            affect_badge("System-wide")
             s = st.session_state.settings
             st.caption("Rename any action button throughout the app. Leave blank to keep the default.")
             labels = s.get("button_labels", dict(DEFAULT_BUTTON_LABELS))
@@ -1540,6 +1574,23 @@ def render_schema():
             if do_reset_labels:
                 s["button_labels"] = dict(DEFAULT_BUTTON_LABELS)
                 save_settings(); st.success("Labels reset."); st.rerun()
+
+        # ── System Tabs ───────────────────────────────────────────────────────
+        with st.expander("🗂 System Tabs", expanded=False):
+            affect_badge("Navigation")
+            st.caption("Show or hide tabs in the main navigation. **Accounts** is always visible.")
+            tab_settings = s_obj.get("system_tabs", {})
+            tab_changed  = False
+            tg = st.columns(3)
+            for i, (tk, tl, removable) in enumerate(TAB_DEFS):
+                if not removable:
+                    tg[i%3].checkbox(tl, value=True, disabled=True, key=f"systab_lock_{tk}")
+                else:
+                    new_val = tg[i%3].checkbox(tl, value=tab_settings.get(tk, True), key=f"systab_{tk}")
+                    if new_val != tab_settings.get(tk, True):
+                        tab_settings[tk] = new_val; tab_changed = True
+            if tab_changed:
+                s_obj["system_tabs"] = tab_settings; save_settings(); st.rerun()
 
     with t3:
         st.subheader("Call status options")
@@ -1856,18 +1907,35 @@ def main():
     render_log_modal(active)
 
     urgency_count = sum(1 for a in st.session_state.accounts if days_since(a["last_call_date"])>14)
-    tab_labels = ["Dashboard","Accounts",f"Urgency ({urgency_count})","Activity Log","Users","Deleted Accounts"]
-    if has_perm(active["role"],"manage_schema"): tab_labels.append("System Settings")
+    tab_settings  = st.session_state.settings.get("system_tabs", {})
 
-    tabs = st.tabs(tab_labels)
-    with tabs[0]: render_dashboard(active, is_rep)
-    with tabs[1]: render_accounts(active, is_rep)
-    with tabs[2]: render_urgency(active)
-    with tabs[3]: render_log(active, is_rep)
-    with tabs[4]: render_users(active)
-    with tabs[5]: render_deleted_accounts(active)
-    if has_perm(active["role"],"manage_schema") and len(tabs)>6:
-        with tabs[6]: render_schema()
+    TAB_RENDERERS = {
+        "dashboard":    lambda: render_dashboard(active, is_rep),
+        "accounts":     lambda: render_accounts(active, is_rep),
+        "urgency":      lambda: render_urgency(active),
+        "activity_log": lambda: render_log(active, is_rep),
+        "users":        lambda: render_users(active),
+        "deleted":      lambda: render_deleted_accounts(active),
+    }
+    TAB_DISPLAY = {
+        "dashboard":    "Dashboard",
+        "accounts":     "Accounts",
+        "urgency":      f"Urgency ({urgency_count})",
+        "activity_log": "Activity Log",
+        "users":        "Users",
+        "deleted":      "Deleted Accounts",
+    }
+
+    visible = [(tk, TAB_DISPLAY[tk]) for tk, _, removable in TAB_DEFS
+               if not removable or tab_settings.get(tk, True)]
+    if has_perm(active["role"], "manage_schema"):
+        visible.append(("schema", "System Settings"))
+
+    tabs = st.tabs([lbl for _, lbl in visible])
+    for i, (tk, _) in enumerate(visible):
+        with tabs[i]:
+            if tk == "schema": render_schema()
+            else: TAB_RENDERERS[tk]()
 
 if __name__ == "__main__":
     main()
