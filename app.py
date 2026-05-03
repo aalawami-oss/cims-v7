@@ -1023,9 +1023,31 @@ def render_accounts(active, is_rep):
             u = get_user(last_note.get("member_id",""))
             if u: last_by = u["name"].split()[0]
 
-        logo_md = b64_img_tag(acc.get("logo_b64"), "acc-logo", acc["brand_name"])
+        logo_md  = b64_img_tag(acc.get("logo_b64"), "acc-logo", acc["brand_name"])
+        owner_u  = get_user(acc.get("account_owner_id",""))
+        f5       = (acc.get("extra_fields") or {}).get("f5_number","")
 
-        with st.expander(f"**{acc['brand_name']}** · {acc['account_name']} · {acc['branches']} branches", expanded=False):
+        # Build expander title from configured field order
+        _title_map = {
+            "ID":            acc["id"],
+            "Account Name":  acc["account_name"],
+            "Brand Name":    acc["brand_name"],
+            "Branches":      f"{acc['branches']} br.",
+            "Sector":        acc["sector"],
+            "Contact":       acc.get("contact_person",""),
+            "Account Owner": owner_u["name"] if owner_u else "",
+            "Last Call":     acc["last_call_date"],
+            "F5 Number":     f5,
+        }
+        _title_parts = []
+        for _fn in card_order:
+            if _fn not in vis: continue
+            _v = _title_map.get(_fn, "")
+            if _v: _title_parts.append(str(_v))
+            if len(_title_parts) >= 3: break
+        _title = " · ".join(_title_parts) or acc["brand_name"]
+
+        with st.expander(f"**{_title}**", expanded=False):
             # Per-row select checkbox (admin)
             if is_admin:
                 is_checked = acc["id"] in selected
@@ -1041,8 +1063,6 @@ def render_accounts(active, is_rep):
             if acc.get("logo_b64"): row_cols[0].markdown(logo_md, unsafe_allow_html=True)
             with info_c:
                 # ── Core fields — in configured order ──────────────────────────
-                owner_u = get_user(acc.get("account_owner_id",""))
-                f5      = acc.get("extra_fields",{}).get("f5_number","")
                 CARD_VALUES = {
                     "ID":            f"`{acc['id']}`",
                     "Account Name":  acc["account_name"],
@@ -1447,49 +1467,60 @@ def render_schema():
             if int(new_ps) != cur_ps:
                 s_obj["accounts_per_page"] = int(new_ps); save_settings(); st.rerun()
 
-            # ── Account Card ───────────────────────────────────────────────────
+            # ── Account Card (collapsible) ─────────────────────────────────────
             st.markdown("---")
-            st.markdown("**Account Card**")
-            st.caption("Control what appears on each account card and in what order.")
+            card_open = st.session_state.get("card_settings_open", False)
+            arrow = "▼" if card_open else "▶"
+            if st.button(f"{arrow} Account Card", key="card_toggle", use_container_width=False):
+                st.session_state["card_settings_open"] = not card_open; st.rerun()
 
-            card_changed = False
+            if card_open:
+                st.caption("Control what appears on each account card and in what order.")
+                card_changed = False
 
-            # Columns per row
-            cc1, cc2 = st.columns(2)
-            cur_cols = int(s_obj.get("card_columns", 4))
-            new_cols = cc1.selectbox("Columns per row", [2, 3, 4],
-                index=[2,3,4].index(cur_cols) if cur_cols in [2,3,4] else 2,
-                key="card_cols_sel")
-            if new_cols != cur_cols:
-                s_obj["card_columns"] = new_cols; card_changed = True
+                # Columns per row + visibility toggles
+                cc1, cc2, cc3 = st.columns(3)
+                cur_cols = int(s_obj.get("card_columns", 4))
+                new_cols = cc1.selectbox("Columns per row", [2, 3, 4],
+                    index=[2,3,4].index(cur_cols) if cur_cols in [2,3,4] else 2,
+                    key="card_cols_sel")
+                if new_cols != cur_cols:
+                    s_obj["card_columns"] = new_cols; card_changed = True
 
-            # Extra card elements
-            cur_show_int = s_obj.get("card_show_interactions", True)
-            cur_show_by  = s_obj.get("card_show_last_by", True)
-            new_show_int = cc2.checkbox("Show recent interactions", value=cur_show_int, key="card_show_int")
-            new_show_by  = st.checkbox("Show 'last logged by'",    value=cur_show_by,  key="card_show_by")
-            if new_show_int != cur_show_int:
-                s_obj["card_show_interactions"] = new_show_int; card_changed = True
-            if new_show_by != cur_show_by:
-                s_obj["card_show_last_by"] = new_show_by; card_changed = True
-            if card_changed:
-                save_settings(); st.rerun()
+                cur_show_int = s_obj.get("card_show_interactions", True)
+                cur_show_by  = s_obj.get("card_show_last_by", True)
+                new_show_int = cc2.checkbox("Show recent interactions", value=cur_show_int, key="card_show_int")
+                new_show_by  = cc3.checkbox("Show 'last logged by'",   value=cur_show_by,  key="card_show_by")
+                if new_show_int != cur_show_int:
+                    s_obj["card_show_interactions"] = new_show_int; card_changed = True
+                if new_show_by != cur_show_by:
+                    s_obj["card_show_last_by"] = new_show_by; card_changed = True
+                if card_changed:
+                    save_settings(); st.rerun()
 
-            # Field order
-            st.markdown("**Field order** — use ⬆/⬇ to reorder; visibility is controlled in Column Visibility")
-            saved_order = s_obj.get("card_field_order", CARD_FIELD_ORDER_DEFAULT)
-            # Keep canonical list in sync (add missing, drop unknown)
-            cur_order = [f for f in saved_order if f in CARD_FIELD_ORDER_DEFAULT] + \
-                        [f for f in CARD_FIELD_ORDER_DEFAULT if f not in saved_order]
-            for oi, fname in enumerate(cur_order):
-                oc1, oc2, oc3 = st.columns([5, 1, 1])
-                oc1.markdown(fname)
-                if oc2.button("⬆", key=f"co_up_{oi}", disabled=(oi == 0)):
-                    cur_order[oi], cur_order[oi-1] = cur_order[oi-1], cur_order[oi]
-                    s_obj["card_field_order"] = cur_order; save_settings(); st.rerun()
-                if oc3.button("⬇", key=f"co_dn_{oi}", disabled=(oi == len(cur_order)-1)):
-                    cur_order[oi], cur_order[oi+1] = cur_order[oi+1], cur_order[oi]
-                    s_obj["card_field_order"] = cur_order; save_settings(); st.rerun()
+                # Field order — editable rank table
+                st.markdown("**Field order** — edit the number to reorder; first visible field becomes the card title")
+                saved_order = s_obj.get("card_field_order", CARD_FIELD_ORDER_DEFAULT)
+                cur_order   = [f for f in saved_order if f in CARD_FIELD_ORDER_DEFAULT] + \
+                              [f for f in CARD_FIELD_ORDER_DEFAULT if f not in saved_order]
+                import pandas as _pd
+                order_df = _pd.DataFrame({
+                    "Order": list(range(1, len(cur_order) + 1)),
+                    "Field": cur_order,
+                })
+                edited_df = st.data_editor(
+                    order_df,
+                    column_config={
+                        "Order": st.column_config.NumberColumn("Order", min_value=1, max_value=len(cur_order), step=1, format="%d"),
+                        "Field": st.column_config.TextColumn("Field", disabled=True),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="card_order_editor",
+                )
+                new_order = edited_df.sort_values("Order", kind="stable")["Field"].tolist()
+                if new_order != cur_order:
+                    s_obj["card_field_order"] = new_order; save_settings(); st.rerun()
 
         # ── Sections ──────────────────────────────────────────────────────────
         with st.expander("📑 Sections", expanded=False):
@@ -1846,9 +1877,8 @@ def render_log_modal(active):
 # ══════════════════════════════════════════════════════════════════════════════
 # ADD ACCOUNT
 # ══════════════════════════════════════════════════════════════════════════════
+@st.dialog("Add Account", width="large")
 def render_add_account(active):
-    if not st.session_state.get("show_add_account"): return
-    st.markdown("---"); st.subheader("Add new account")
     with st.form("add_acc_form"):
         c1,c2=st.columns(2); acc_name=c1.text_input("Account name",placeholder="Legal entity"); brand=c2.text_input("Brand name",placeholder="Public name")
         c3,c4=st.columns(2); branches=c3.number_input("# of branches",min_value=1,value=10); sector=c4.selectbox("Sector",SECTORS)
@@ -1871,8 +1901,8 @@ def render_add_account(active):
             new_acc={"id":f"ACC-{str(len(st.session_state.accounts)+1).zfill(4)}","account_name":acc_name,"brand_name":brand,"branches":int(branches),"sector":sector,"last_call_date":rnd_date(1),"contact_person":contact,"account_owner_id":owner_id,"notes":[],"extra_fields":ef_vals,"logo_b64":logo_b64,"is_deleted":False}
             st.session_state.accounts.append(new_acc)
             sb_upsert_account(new_acc)
-            st.session_state.show_add_account=False; st.success(f"Account '{brand}' added."); st.rerun()
-    if do_cancel: st.session_state.show_add_account=False; st.rerun()
+            st.toast(f"Account '{brand}' added."); st.rerun()
+    if do_cancel: st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DIALOGS
@@ -2055,9 +2085,8 @@ def main():
             _import_dialog()
     with tc[2]:
         if has_perm(active["role"],"acc_add") and st.button(get_btn("add_account"),type="primary",use_container_width=True,key="top_add"):
-            st.session_state.show_add_account=True; st.session_state.show_log_modal=False
+            render_add_account(active)
 
-    render_add_account(active)
     render_log_modal(active)
 
     urgency_count = sum(1 for a in st.session_state.accounts if days_since(a["last_call_date"])>14)
