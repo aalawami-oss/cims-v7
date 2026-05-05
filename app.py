@@ -1121,6 +1121,50 @@ def render_accounts(active, is_rep):
                     val = acc.get("extra_fields",{}).get(f["id"],"")
                     if val and f["label"] in vis:
                         ug[ui%4].markdown(f"**{f['label']}:** {val}"); ui+=1
+            # ── Target Products ────────────────────────────────────────────────
+            tps = (acc.get("extra_fields") or {}).get("target_products", [])
+            if tps or can_edit:
+                st.markdown("---")
+                tp_header, tp_add_col = st.columns([5, 1])
+                tp_header.markdown("**🎯 Target Products**")
+                if can_edit and tp_add_col.button("＋ Add", key=f"add_tp_btn_{acc['id']}"):
+                    _add_target_dialog(acc["id"])
+
+                if tps:
+                    for tp in sorted(tps, key=lambda x: x.get("expiry_date",""), reverse=False):
+                        exp_str = tp.get("expiry_date","")
+                        try:
+                            exp_d    = date.fromisoformat(exp_str)
+                            expired  = exp_d < date.today()
+                            days_rem = (exp_d - date.today()).days
+                            if expired:
+                                badge = f'<span style="background:#ffebee;color:#c62828;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600">Expired {exp_str}</span>'
+                            elif days_rem <= 7:
+                                badge = f'<span style="background:#fff3e0;color:#e65100;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600">Expires in {days_rem}d</span>'
+                            else:
+                                badge = f'<span style="background:#e8f5e9;color:#2e7d32;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600">Active · {days_rem}d left</span>'
+                        except Exception:
+                            badge = f'<span style="background:#f5f5f5;color:#666;padding:2px 9px;border-radius:10px;font-size:11px">Until {exp_str}</span>'
+
+                        tc1, tc2, tc3 = st.columns([3, 2, 1])
+                        tc1.markdown(
+                            f"**{tp['product']}**" + (f"<br><small style='color:#888'>{tp['notes']}</small>" if tp.get("notes") else ""),
+                            unsafe_allow_html=True
+                        )
+                        tc2.markdown(badge, unsafe_allow_html=True)
+                        tc3.caption(f"Added {tp.get('date_added','')}")
+                        if can_edit:
+                            if st.button("Remove", key=f"rm_tp_{tp['id']}_{acc['id']}"):
+                                ef2 = acc.get("extra_fields") or {}
+                                ef2["target_products"] = [x for x in ef2.get("target_products",[]) if x["id"] != tp["id"]]
+                                acc["extra_fields"] = ef2
+                                for i, a in enumerate(st.session_state.accounts):
+                                    if a["id"] == acc["id"]:
+                                        st.session_state.accounts[i]["extra_fields"] = ef2; break
+                                sb_upsert_account(acc); st.rerun()
+                else:
+                    st.caption("No target products set for this account.")
+
             if show_last_by:
                 st.markdown(f"**Last logged by:** {last_by}")
 
@@ -1190,11 +1234,13 @@ def _render_edit_account():
             st.error("F5 Number must be exactly 6 digits.")
         else:
             ef_vals["f5_number"] = new_f5.strip()
+            # Merge with existing extra_fields so target_products and other keys are preserved
+            merged_ef = {**(acc.get("extra_fields") or {}), **ef_vals}
             new_owner_id = next((u["id"] for u in st.session_state.users if u["name"]==new_owner_sel), "") if new_owner_sel != "— None —" else ""
             new_b64 = img_to_b64(new_logo_f) if new_logo_f else acc.get("logo_b64")
             for i,a in enumerate(st.session_state.accounts):
                 if a["id"]==acc_id:
-                    st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"account_owner_id":new_owner_id,"extra_fields":ef_vals,"logo_b64":new_b64}
+                    st.session_state.accounts[i]={**a,"account_name":new_name,"brand_name":new_brand,"branches":int(new_branches),"sector":new_sector,"contact_person":new_contact,"account_owner_id":new_owner_id,"extra_fields":merged_ef,"logo_b64":new_b64}
                     sb_upsert_account(st.session_state.accounts[i]); break
             del st.session_state["editing_account"]; st.success("Account updated."); st.rerun()
     if do_clear:
@@ -1907,6 +1953,43 @@ def render_add_account(active):
 # ══════════════════════════════════════════════════════════════════════════════
 # DIALOGS
 # ══════════════════════════════════════════════════════════════════════════════
+@st.dialog("Add Target Product")
+def _add_target_dialog(acc_id: str):
+    acc = next((a for a in st.session_state.accounts if a["id"] == acc_id), None)
+    if not acc: return
+    st.caption(f"{acc['brand_name']} · {acc['account_name']}")
+    with st.form("add_target_form"):
+        product     = st.text_input("Product name", placeholder="e.g. Foodics Online")
+        notes_t     = st.text_input("Notes (optional)", placeholder="e.g. Q2 focus")
+        td1, td2    = st.columns(2)
+        date_added  = td1.date_input("Date added", value=date.today())
+        # Default expiry = last day of current month
+        _today = date.today()
+        import calendar as _cal
+        _last_day = _cal.monthrange(_today.year, _today.month)[1]
+        default_exp = _today.replace(day=_last_day)
+        expiry_date = td2.date_input("Expiry date", value=default_exp)
+        do_add = st.form_submit_button("Add target", type="primary")
+    if do_add:
+        if not product.strip():
+            st.error("Product name is required."); return
+        tp = {
+            "id":          "tp" + new_id(),
+            "product":     product.strip(),
+            "notes":       notes_t.strip(),
+            "date_added":  str(date_added),
+            "expiry_date": str(expiry_date),
+        }
+        ef = acc.get("extra_fields") or {}
+        if not isinstance(ef, dict): ef = {}
+        ef.setdefault("target_products", []).append(tp)
+        acc["extra_fields"] = ef
+        for i, a in enumerate(st.session_state.accounts):
+            if a["id"] == acc_id:
+                st.session_state.accounts[i]["extra_fields"] = ef; break
+        sb_upsert_account(acc)
+        st.rerun()
+
 @st.dialog("Import Accounts", width="large")
 def _import_dialog():
     cols = (["Account ID","Account Name","Brand Name","# of Branches","Sector",
