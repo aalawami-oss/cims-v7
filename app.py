@@ -1990,62 +1990,155 @@ def _add_target_dialog(acc_id: str):
         sb_upsert_account(acc)
         st.rerun()
 
-@st.dialog("Import Accounts", width="large")
+@st.dialog("Import", width="large")
 def _import_dialog():
-    cols = (["Account ID","Account Name","Brand Name","# of Branches","Sector",
-             "Contact Person","Account Owner","F5 Number"] +
-            [f["label"] for f in st.session_state.account_extra_fields])
-    tmpl = pd.DataFrame(columns=cols)
-    dl1, dl2 = st.columns(2)
-    dl1.download_button("⬇ CSV template",   tmpl.to_csv(index=False).encode(),       "accounts_template.csv",  "text/csv",                                                           key="dlg_tmpl_csv")
-    dl2.download_button("⬇ Excel template", df_to_excel_bytes(tmpl),                 "accounts_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dlg_tmpl_xl")
-    mode = st.radio("Import mode", ["Add new rows","Update existing by Account ID","Add new + update existing"], horizontal=True, key="dlg_import_mode")
-    uploaded = st.file_uploader("Upload CSV, XLSX or XLS", type=["csv","xlsx","xls"], key="dlg_acc_upload")
-    if uploaded:
-        try:
-            df = read_upload(uploaded); df.columns = [c.strip() for c in df.columns]
-            st.caption(f"{len(df)} rows · {uploaded.name}")
-            st.dataframe(df.head(5), use_container_width=True)
-            if st.button("Confirm import", type="primary", key="dlg_confirm_import"):
-                added = updated = skipped = 0; bulk_new = []; bulk_update = []
-                prog = st.progress(0, text="Preparing…"); total = max(len(df), 1)
-                for i, (_, row) in enumerate(df.iterrows()):
-                    prog.progress((i + 1) / total, text=f"Row {i+1} of {total}…")
-                    acc_name  = str(row.get("Account Name","")).strip()
-                    brand_name = str(row.get("Brand Name","")).strip()
-                    if not acc_name or not brand_name: skipped += 1; continue
-                    br_raw = row.get("# of Branches", 0)
-                    try: branches = int(float(str(br_raw))) if str(br_raw).strip() not in ("","nan") else 0
-                    except: branches = 0
-                    acc_id_raw = str(row.get("Account ID","")).strip()
-                    existing   = next((a for a in st.session_state.accounts if a["id"]==acc_id_raw), None) if acc_id_raw and acc_id_raw.lower()!="nan" else None
-                    # Resolve account owner by name
-                    owner_name = str(row.get("Account Owner","")).strip()
-                    owner_id   = next((u["id"] for u in st.session_state.users if u["name"].lower()==owner_name.lower()), "")
-                    new_acc = {
-                        "id": existing["id"] if existing else (acc_id_raw if acc_id_raw and acc_id_raw.lower()!="nan" else f"ACC-{str(len(st.session_state.accounts)+added+1).zfill(4)}"),
-                        "account_name": acc_name, "brand_name": brand_name, "branches": branches,
-                        "sector":         str(row.get("Sector","Retail")).strip() or "Retail",
-                        "contact_person": str(row.get("Contact Person","")).strip(),
-                        "account_owner_id": owner_id,
-                        "last_call_date": str(row.get("Last Call Date", rnd_date(1))).strip() or rnd_date(1),
-                        "notes": existing["notes"] if existing else [],
-                        "extra_fields": {**{f["id"]: str(row.get(f["label"],"")).strip() for f in st.session_state.account_extra_fields}, "f5_number": str(row.get("F5 Number","")).strip()},
-                        "logo_b64": existing["logo_b64"] if existing else None, "is_deleted": False,
-                    }
-                    if existing and "Update" in mode:
-                        idx = st.session_state.accounts.index(existing); st.session_state.accounts[idx] = new_acc; bulk_update.append(new_acc); updated += 1
-                    elif not existing:
-                        st.session_state.accounts.append(new_acc); bulk_new.append(new_acc); added += 1
-                    else:
-                        skipped += 1
-                prog.empty()
-                all_to_write = bulk_new + bulk_update
-                if all_to_write: sb_upsert_accounts_bulk(all_to_write)
-                st.success(f"Done — {added} added · {updated} updated · {skipped} skipped")
-                st.rerun()
-        except Exception as ex:
-            st.error(f"Import error: {ex}")
+    tab_acc, tab_tp = st.tabs(["📋 Accounts", "🎯 Target Products"])
+
+    # ── Tab 1: Accounts ────────────────────────────────────────────────────────
+    with tab_acc:
+        cols = (["Account ID","Account Name","Brand Name","# of Branches","Sector",
+                 "Contact Person","Account Owner","F5 Number"] +
+                [f["label"] for f in st.session_state.account_extra_fields])
+        tmpl = pd.DataFrame(columns=cols)
+        dl1, dl2 = st.columns(2)
+        dl1.download_button("⬇ CSV template",   tmpl.to_csv(index=False).encode(),   "accounts_template.csv",  "text/csv",                                                           key="dlg_tmpl_csv")
+        dl2.download_button("⬇ Excel template", df_to_excel_bytes(tmpl),             "accounts_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dlg_tmpl_xl")
+        mode = st.radio("Import mode", ["Add new rows","Update existing by Account ID","Add new + update existing"], horizontal=True, key="dlg_import_mode")
+        uploaded = st.file_uploader("Upload CSV, XLSX or XLS", type=["csv","xlsx","xls"], key="dlg_acc_upload")
+        if uploaded:
+            try:
+                df = read_upload(uploaded); df.columns = [c.strip() for c in df.columns]
+                st.caption(f"{len(df)} rows · {uploaded.name}")
+                st.dataframe(df.head(5), use_container_width=True)
+                if st.button("Confirm import", type="primary", key="dlg_confirm_import"):
+                    added = updated = skipped = 0; bulk_new = []; bulk_update = []
+                    prog = st.progress(0, text="Preparing…"); total = max(len(df), 1)
+                    for i, (_, row) in enumerate(df.iterrows()):
+                        prog.progress((i + 1) / total, text=f"Row {i+1} of {total}…")
+                        acc_name  = str(row.get("Account Name","")).strip()
+                        brand_name = str(row.get("Brand Name","")).strip()
+                        if not acc_name or not brand_name: skipped += 1; continue
+                        br_raw = row.get("# of Branches", 0)
+                        try: branches = int(float(str(br_raw))) if str(br_raw).strip() not in ("","nan") else 0
+                        except: branches = 0
+                        acc_id_raw = str(row.get("Account ID","")).strip()
+                        existing   = next((a for a in st.session_state.accounts if a["id"]==acc_id_raw), None) if acc_id_raw and acc_id_raw.lower()!="nan" else None
+                        owner_name = str(row.get("Account Owner","")).strip()
+                        owner_id   = next((u["id"] for u in st.session_state.users if u["name"].lower()==owner_name.lower()), "")
+                        new_acc = {
+                            "id": existing["id"] if existing else (acc_id_raw if acc_id_raw and acc_id_raw.lower()!="nan" else f"ACC-{str(len(st.session_state.accounts)+added+1).zfill(4)}"),
+                            "account_name": acc_name, "brand_name": brand_name, "branches": branches,
+                            "sector":         str(row.get("Sector","Retail")).strip() or "Retail",
+                            "contact_person": str(row.get("Contact Person","")).strip(),
+                            "account_owner_id": owner_id,
+                            "last_call_date": str(row.get("Last Call Date", rnd_date(1))).strip() or rnd_date(1),
+                            "notes": existing["notes"] if existing else [],
+                            "extra_fields": {**(existing.get("extra_fields") or {}), **{f["id"]: str(row.get(f["label"],"")).strip() for f in st.session_state.account_extra_fields}, "f5_number": str(row.get("F5 Number","")).strip()},
+                            "logo_b64": existing["logo_b64"] if existing else None, "is_deleted": False,
+                        }
+                        if existing and "Update" in mode:
+                            idx = st.session_state.accounts.index(existing); st.session_state.accounts[idx] = new_acc; bulk_update.append(new_acc); updated += 1
+                        elif not existing:
+                            st.session_state.accounts.append(new_acc); bulk_new.append(new_acc); added += 1
+                        else:
+                            skipped += 1
+                    prog.empty()
+                    all_to_write = bulk_new + bulk_update
+                    if all_to_write: sb_upsert_accounts_bulk(all_to_write)
+                    st.success(f"Done — {added} added · {updated} updated · {skipped} skipped")
+                    st.rerun()
+            except Exception as ex:
+                st.error(f"Import error: {ex}")
+
+    # ── Tab 2: Target Products ─────────────────────────────────────────────────
+    with tab_tp:
+        st.caption("Link target products to accounts in bulk. Match by Account ID or Account Name.")
+
+        tp_tmpl = pd.DataFrame(columns=["Account ID","Account Name","Product","Notes","Date Added","Expiry Date"])
+        tp1, tp2 = st.columns(2)
+        tp1.download_button("⬇ CSV template",   tp_tmpl.to_csv(index=False).encode(), "target_products_template.csv",  "text/csv",                                                           key="tp_tmpl_csv")
+        tp2.download_button("⬇ Excel template", df_to_excel_bytes(tp_tmpl),           "target_products_template.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="tp_tmpl_xl")
+
+        tp_mode = st.radio(
+            "Import mode",
+            ["Append to existing targets", "Replace all targets for matched accounts"],
+            horizontal=True, key="tp_import_mode"
+        )
+        tp_uploaded = st.file_uploader("Upload CSV, XLSX or XLS", type=["csv","xlsx","xls"], key="dlg_tp_upload")
+
+        if tp_uploaded:
+            try:
+                tp_df = read_upload(tp_uploaded); tp_df.columns = [c.strip() for c in tp_df.columns]
+                st.caption(f"{len(tp_df)} rows · {tp_uploaded.name}")
+                st.dataframe(tp_df.head(6), use_container_width=True)
+
+                if st.button("Confirm import", type="primary", key="tp_confirm_import"):
+                    matched = skipped_tp = added_tp = 0
+                    prog_tp = st.progress(0, text="Preparing…"); total_tp = max(len(tp_df), 1)
+
+                    # Group rows by account so we can replace-all per account once
+                    acc_targets: dict = {}   # acc_id → list of new target dicts
+                    _today_str = str(date.today())
+                    import calendar as _cal2
+                    _last = _cal2.monthrange(date.today().year, date.today().month)[1]
+                    _default_exp = str(date.today().replace(day=_last))
+
+                    for i, (_, row) in enumerate(tp_df.iterrows()):
+                        prog_tp.progress((i + 1) / total_tp, text=f"Row {i+1} of {total_tp}…")
+                        product = str(row.get("Product","")).strip()
+                        if not product: skipped_tp += 1; continue
+
+                        # Resolve account
+                        acc_id_r   = str(row.get("Account ID","")).strip()
+                        acc_name_r = str(row.get("Account Name","")).strip().lower()
+                        acc = None
+                        if acc_id_r and acc_id_r.lower() not in ("","nan"):
+                            acc = next((a for a in st.session_state.accounts if a["id"] == acc_id_r), None)
+                        if not acc and acc_name_r:
+                            acc = next((a for a in st.session_state.accounts if a["account_name"].lower() == acc_name_r), None)
+                        if not acc: skipped_tp += 1; continue
+
+                        # Parse dates
+                        da_raw  = str(row.get("Date Added","")).strip()
+                        exp_raw = str(row.get("Expiry Date","")).strip()
+                        try:    da_str  = str(pd.to_datetime(da_raw).date())  if da_raw  not in ("","nan") else _today_str
+                        except: da_str  = _today_str
+                        try:    exp_str = str(pd.to_datetime(exp_raw).date()) if exp_raw not in ("","nan") else _default_exp
+                        except: exp_str = _default_exp
+
+                        tp_obj = {
+                            "id":          "tp" + new_id(),
+                            "product":     product,
+                            "notes":       str(row.get("Notes","")).strip(),
+                            "date_added":  da_str,
+                            "expiry_date": exp_str,
+                        }
+                        acc_targets.setdefault(acc["id"], []).append(tp_obj)
+                        added_tp += 1; matched += 1
+
+                    # Apply to accounts
+                    to_upsert = []
+                    for acc_id_key, new_tps in acc_targets.items():
+                        acc = next((a for a in st.session_state.accounts if a["id"] == acc_id_key), None)
+                        if not acc: continue
+                        ef = acc.get("extra_fields") or {}
+                        if not isinstance(ef, dict): ef = {}
+                        if "Replace" in tp_mode:
+                            ef["target_products"] = new_tps
+                        else:
+                            ef.setdefault("target_products", []).extend(new_tps)
+                        acc["extra_fields"] = ef
+                        for i, a in enumerate(st.session_state.accounts):
+                            if a["id"] == acc_id_key:
+                                st.session_state.accounts[i]["extra_fields"] = ef; break
+                        to_upsert.append(acc)
+
+                    prog_tp.empty()
+                    if to_upsert: sb_upsert_accounts_bulk(to_upsert)
+                    st.success(f"Done — {added_tp} targets added to {len(acc_targets)} accounts · {skipped_tp} rows skipped")
+                    st.rerun()
+            except Exception as ex:
+                st.error(f"Import error: {ex}")
 
 
 @st.dialog("Edit Custom Field")
